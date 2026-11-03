@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "5-glass-tint-fast"
+VERSION = "6-diagnostics"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
@@ -356,6 +356,9 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
         if tc_img is not None:
             info["image"] = tc_img
             info["base"][:3] = [1.0, 1.0, 1.0]
+            _px = np.asarray(tc_img.convert("RGBA"), dtype=np.float32).reshape(-1, 4)
+            info["tint_srgb"] = [int(v) for v in _px[:, :3].mean(0).round()]
+            info["tint_alpha_min"] = int(_px[:, 3].min())
         elif tc_fb is not None:
             info["base"][:3] = _rgb(tc_fb)
         else:
@@ -363,6 +366,10 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
         ior = nodes.get("IOR")
         ior_fb = _val(ior.GetPrim().GetAttribute("inputs:fallback")) if ior else None
         info["ior"] = min(max(float(ior_fb[0]), 1.0), 2.4) if ior_fb is not None else 1.45
+        dp = nodes.get("transmission_depth")
+        dpv = _val(dp.GetPrim().GetAttribute("inputs:fallback")) if dp else None
+        info["depth"] = float(dpv[0]) if dpv is not None else None
+        info["tc_fallback"] = [round(float(x), 3) for x in tc_fb[:3]] if tc_fb is not None else None
     cache[key] = info
     return info
 
@@ -644,7 +651,12 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
         scene.add_geometry(tm, node_name=name, geom_name=name)
         if material.get("glass"):
             glass_nodes[name] = (material.get("transmission", 1.0), material.get("ior", 1.45))
-        diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")), "glass": bool(material.get("glass")),
+        print(f"[material] {name:32s} mat={material.get('name')} glass={bool(material.get('glass'))} "
+              f"transmission={material.get('transmission')} ior={material.get('ior')} depth={material.get('depth')} "
+              f"tint_fallback={material.get('tc_fallback')} tint_mean_sRGB={material.get('tint_srgb')} "
+              f"tint_alpha_min={material.get('tint_alpha_min')} base={[round(c, 3) for c in material['base']]} "
+              f"texture={material.get('image') is not None} opacity_map={material.get('opacity') is not None}", flush=True)
+        diag.append({"tint": material.get("tint_srgb"), "mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")), "glass": bool(material.get("glass")),
                      "uv": material.get("uv"), "alpha": bool(material.get("alpha"))})
         n_meshes += 1; n_tris += len(tm.faces)
 

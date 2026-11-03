@@ -358,6 +358,8 @@ async function setupFromServer(info, keepView) {
     $('optArtVar').innerHTML = art.options.map((o) => `<option value="${o}">${o[0].toUpperCase() + o.slice(1)}</option>`).join('');
     $('optArtVar').value = art.selected;
   }
+  $('tintLabel').hidden = !(info.meshes || []).some((m) => m.glass);
+  applyTint();
   if ((info.meshes || []).some((m) => m.glass) && !keepView) {      // clear liquid/glass reads best on a light backdrop
     $('optBg').value = '#ffffff'; scene.background = new THREE.Color('#ffffff'); if (ptOn) pt.updateEnvironment();
   }
@@ -456,7 +458,7 @@ function buildLayers(root) {
     const mi = (root.userData.meshInfo || []).find((m) => m.mesh === nm);
     if (mi) {
       const uv = mi.uv ? ` · UV ${mi.uv.varname || 'default'}${mi.uv.scale ? ' scale ' + mi.uv.scale.map((v) => +v.toFixed(3)).join('×') : ''}` : '';
-      lab.title = `material ${mi.material} · texture ${mi.texture ? 'yes' : 'no'}${mi.atlas ? ' · artwork atlas decoded' : ''}${mi.alpha ? ' · transparent' : ''}${uv}`;
+      lab.title = `material ${mi.material}${mi.glass ? ' · glass/liquid' : ''}${mi.tint ? ' · tint rgb(' + mi.tint.join(',') + ')' : ''} · texture ${mi.texture ? 'yes' : 'no'}${mi.atlas ? ' · artwork atlas decoded' : ''}${mi.alpha ? ' · transparent' : ''}${uv}`;
     }
     lab.append(cb, ' ', nm);
     list.append(lab);
@@ -495,6 +497,16 @@ function syncUI() {      // apply the checkbox states as shown (the browser/host
   applyLight(); applyEnv();
   sun.castShadow = $('optShadow').checked && !ptOn; floor.visible = !!current && (ptOn || $('optShadow').checked);
   applyWire(); applyDouble();
+}
+function applyTint() {
+  const k = +$('optTint').value;
+  current?.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) if (m.userData.nested !== undefined || m.transmission > 0 || m.userData.glass) {
+      m.userData.glass = true; m.color.setScalar(k);
+    }
+  });
+  if (ptOn) pt.updateMaterials();
 }
 function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v; renderer.toneMappingExposure = +$('optExposure').value; }
 function applyEnv() {
@@ -536,6 +548,7 @@ $('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value
 $('optLight').oninput = () => { applyLight(); if (ptOn) { pt.updateLights(); pt.updateEnvironment(); } };
 $('optExposure').oninput = () => { applyLight(); if (ptOn) pt.reset(); };
 $('optEnv').onchange = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
+$('optTint').oninput = applyTint;
 $('optEnvRot').oninput = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
 function changeVariant(set, value) {
   if (!session) return;
