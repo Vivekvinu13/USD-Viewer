@@ -71,3 +71,9 @@ plus its real index of refraction. A model with clear glass opens on a white bac
 object nested inside another transmissive object (liquid in a bottle) is shown as a tinted solid; **Path tracing**
 renders true refraction. Big textures are downsampled to 2048 px while decoding, and switching Wet/Dry reuses the
 files already on the server, so it no longer re-uploads or re-decodes them.
+
+### Why dark transmission colours are normal
+Grip's `transmission_color` is an *absorption* colour (the colour reached after light has travelled through the
+material), so values like (0.01, 0.07, 0.015) are expected for thin green glass. The converter turns it into glTF
+`KHR_materials_volume` (transmittance = tint ^ k). `k` is chosen so glass stays light and liquids stay deeper; the
+**Glass/liquid tint** slider scales it.

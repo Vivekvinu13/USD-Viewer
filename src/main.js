@@ -99,6 +99,7 @@ function setNested(on) {
     if (!o.isMesh) return;
     for (const m of [].concat(o.material)) if (m.userData.nested !== undefined) { m.transmission = on ? m.userData.nested : 0; m.needsUpdate = true; }
   });
+  applyTint();
 }
 function applyPTScene() {
   if (!ptOn || !pt) return;
@@ -402,7 +403,7 @@ function prepare(root, file) {
   root.traverse((o) => {
     if (!o.isMesh) return;
     for (const m of [].concat(o.material)) if (m.transmission > 0) {
-      m.thickness = 0.0006; m.roughness = Math.min(m.roughness ?? 0.05, 0.05);
+      m.roughness = Math.min(m.roughness ?? 0.05, 0.05);
       trans.push({ m, box: new THREE.Box3().setFromObject(o) });
     }
   });
@@ -499,14 +500,23 @@ function syncUI() {      // apply the checkbox states as shown (the browser/host
   applyWire(); applyDouble();
 }
 function applyTint() {
-  const k = +$('optTint').value;
+  // Glass/liquid absorb light in proportion to thickness: transmittance = tint ** k. The slider scales k.
+  const mult = +$('optTint').value;
+  const byName = {};
+  (current?.userData.meshInfo || []).forEach((mi) => { byName[mi.mesh] = mi; });
   current?.traverse((o) => {
     if (!o.isMesh) return;
-    for (const m of [].concat(o.material)) if (m.userData.nested !== undefined || m.transmission > 0 || m.userData.glass) {
-      m.userData.glass = true; m.color.setScalar(k);
+    const mi = byName[o.name];
+    if (!mi?.glass || !(mi.k > 0) || !mi.tint_lin) return;
+    const k = mi.k * mult;
+    for (const m of [].concat(o.material)) {
+      if (m.userData.nested !== undefined) {          // inner liquid: tinted solid in the normal view, true volume in path tracing
+        if (ptOn) m.color.setRGB(1, 1, 1);
+        else m.color.setRGB(...mi.tint_lin.map((c) => Math.pow(Math.max(c, 1e-4), k)));
+      } else m.thickness = k;
     }
   });
-  if (ptOn) pt.updateMaterials();
+  if (ptOn && pt) pt.updateMaterials();
 }
 function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v; renderer.toneMappingExposure = +$('optExposure').value; }
 function applyEnv() {

@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "6-diagnostics"
+VERSION = "7-volume-absorption"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
@@ -353,16 +353,20 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
         tc = nodes.get("transmission_color")
         tc_fb = _val(tc.GetPrim().GetAttribute("inputs:fallback")) if tc else None
         tc_img = (_load_image(_asset_path(tc.GetPrim().GetAttribute("inputs:file")), warnings, True) if tc else None)
+        # Grip/Arnold's transmission colour is the colour reached after light has travelled `transmission_depth`
+        # through the material (an absorption colour), so it is NOT a plain multiplier: very dark values are normal.
+        # It becomes glTF volume attenuation, and the base colour stays white.
+        info["base"][:3] = [1.0, 1.0, 1.0]
+        info["image"] = None
         if tc_img is not None:
-            info["image"] = tc_img
-            info["base"][:3] = [1.0, 1.0, 1.0]
             _px = np.asarray(tc_img.convert("RGBA"), dtype=np.float32).reshape(-1, 4)
             info["tint_srgb"] = [int(v) for v in _px[:, :3].mean(0).round()]
             info["tint_alpha_min"] = int(_px[:, 3].min())
+            info["tint_lin"] = [float(v) for v in _srgb_decode(_px[:, :3] / 255.0).mean(0)]
         elif tc_fb is not None:
-            info["base"][:3] = _rgb(tc_fb)
+            info["tint_lin"] = [float(x) for x in tc_fb[:3]]
         else:
-            info["base"][:3] = [1.0, 1.0, 1.0]
+            info["tint_lin"] = [1.0, 1.0, 1.0]
         ior = nodes.get("IOR")
         ior_fb = _val(ior.GetPrim().GetAttribute("inputs:fallback")) if ior else None
         info["ior"] = min(max(float(ior_fb[0]), 1.0), 2.4) if ior_fb is not None else 1.45
@@ -559,9 +563,21 @@ def encode_environment(path: str, w: int = 1024, h: int = 512) -> bytes | None:
 
 
 # --------------------------------------------------------------------------- glTF post-processing
-def patch_glb_glass(glb: bytes, glass: dict[str, tuple[float, float]]) -> bytes:
+def default_k(mesh_name: str, tint: list[float]) -> float:
+    """Thickness/attenuation ratio k so the glass or liquid comes out at a sensible brightness.
+    Transmittance = tint ** k (Beer-Lambert). Thin glass walls stay light; liquids are deeper."""
+    lum = 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2]
+    if lum >= 0.98:
+        return 0.0                                   # colourless
+    liquid = any(w in mesh_name.lower() for w in ("liquid", "cola", "drink", "juice", "beer", "wine", "milk", "water", "fluid"))
+    target = 0.22 if liquid else 0.6
+    lum = max(lum, 1e-4)
+    return float(min(max(math.log(target) / math.log(lum), 0.03), 1.0))
+
+
+def patch_glb_glass(glb: bytes, glass: dict[str, tuple]) -> bytes:
     """Mark materials of the named nodes as transmissive (KHR_materials_transmission / ior).
-    `glass` maps node name -> (transmission factor, index of refraction)."""
+    `glass` maps node name -> (transmission factor, index of refraction, tint colour, thickness ratio k)."""
     if not glass:
         return glb
     off, chunks = 12, []
@@ -571,20 +587,23 @@ def patch_glb_glass(glb: bytes, glass: dict[str, tuple[float, float]]) -> bytes:
         off += 8 + clen
     doc = json.loads(chunks[0][1].decode("utf-8").rstrip(" \x00"))
     mats = doc.get("materials", [])
-    hit: dict[int, tuple[float, float]] = {}
+    hit: dict[int, tuple] = {}
     for node in doc.get("nodes", []):
         if node.get("name") in glass and "mesh" in node:
             for prim in doc["meshes"][node["mesh"]].get("primitives", []):
                 if "material" in prim:
                     hit[prim["material"]] = glass[node["name"]]
-    for i, (tr, ior) in hit.items():
+    for i, (tr, ior, tint, k) in hit.items():
         ext = mats[i].setdefault("extensions", {})
         ext["KHR_materials_transmission"] = {"transmissionFactor": float(tr)}
         ext["KHR_materials_ior"] = {"ior": float(ior)}
+        if k > 0:                                    # absorption: transmittance = tint ** k
+            ext["KHR_materials_volume"] = {"thicknessFactor": float(k), "attenuationDistance": 1.0,
+                                           "attenuationColor": [max(float(c), 1e-4) for c in tint]}
         mats[i].setdefault("pbrMetallicRoughness", {})["metallicFactor"] = 0.0
     if hit:
         used = doc.setdefault("extensionsUsed", [])
-        for e in ("KHR_materials_transmission", "KHR_materials_ior"):
+        for e in ("KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_volume"):
             if e not in used:
                 used.append(e)
     raw = json.dumps(doc, separators=(",", ":")).encode("utf-8")
@@ -614,7 +633,7 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
     scene = trimesh.Scene()
     n_meshes = n_tris = 0
     diag: list = []
-    glass_nodes: dict[str, tuple[float, float]] = {}
+    glass_nodes: dict[str, tuple] = {}
     t0 = time.perf_counter()
     seen_names: dict[str, int] = {}
     pred = Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)
@@ -650,13 +669,16 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
             name = f"{name}_{seen_names[name]}"
         scene.add_geometry(tm, node_name=name, geom_name=name)
         if material.get("glass"):
-            glass_nodes[name] = (material.get("transmission", 1.0), material.get("ior", 1.45))
+            tint = material.get("tint_lin") or [1.0, 1.0, 1.0]
+            material.setdefault("_k", {})[name] = default_k(name, tint)
+            glass_nodes[name] = (material.get("transmission", 1.0), material.get("ior", 1.45), tint, material["_k"][name])
         print(f"[material] {name:32s} mat={material.get('name')} glass={bool(material.get('glass'))} "
               f"transmission={material.get('transmission')} ior={material.get('ior')} depth={material.get('depth')} "
               f"tint_fallback={material.get('tc_fallback')} tint_mean_sRGB={material.get('tint_srgb')} "
               f"tint_alpha_min={material.get('tint_alpha_min')} base={[round(c, 3) for c in material['base']]} "
               f"texture={material.get('image') is not None} opacity_map={material.get('opacity') is not None}", flush=True)
-        diag.append({"tint": material.get("tint_srgb"), "mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")), "glass": bool(material.get("glass")),
+        diag.append({"tint": material.get("tint_srgb"), "tint_lin": material.get("tint_lin"),
+                     "k": (material.get("_k") or {}).get(name), "mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")), "glass": bool(material.get("glass")),
                      "uv": material.get("uv"), "alpha": bool(material.get("alpha"))})
         n_meshes += 1; n_tris += len(tm.faces)
 
