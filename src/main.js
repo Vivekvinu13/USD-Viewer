@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { makeStudioScene, envFromScene } from './studio.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -25,19 +26,33 @@ const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.9;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.6;
+const envs = {
+  studio: envFromScene(renderer, makeStudioScene()),
+  room: envFromScene(renderer, new RoomEnvironment()),
+};
+scene.environment = envs.studio;
+scene.environmentIntensity = 1.0;
 const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
 camera.position.set(3, 2, 4);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 
-const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+const sun = new THREE.DirectionalLight(0xffffff, 0.8);
 sun.position.set(5, 10, 7);
-scene.add(sun, new THREE.HemisphereLight(0xffffff, 0x444455, 0.15));
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.radius = 6; sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
+scene.add(sun, sun.target);
+// ground: soft shadow catcher in normal mode, real matte floor in path-traced mode
+const floorShadow = new THREE.ShadowMaterial({ opacity: 0.38 });
+const floorPT = new THREE.MeshStandardMaterial({ color: 0x5f626a, roughness: 0.85, metalness: 0 });
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), floorShadow);
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; floor.visible = false;
+scene.add(floor);
 const grid = new THREE.GridHelper(10, 20, 0x6a6f7a, 0x3a3e47);
 grid.material.transparent = true; grid.material.opacity = 0.6;
 const axes = new THREE.AxesHelper(1); axes.visible = false;
@@ -58,11 +73,48 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
+// ---------- optional path tracing (photo-like, progressive) ----------
+let pt = null, ptOn = false;
+function ptStatus(t) { $('ptStatus').textContent = t; }
+async function enablePT() {
+  ptStatus('Loading path tracer…');
+  try {
+    if (!pt) {
+      const { WebGLPathTracer } = await import('three-gpu-pathtracer');
+      pt = new WebGLPathTracer(renderer);
+      pt.bounces = 8; pt.transmissiveBounces = 8; pt.filterGlossyFactor = 0.5;
+      pt.dynamicLowRes = true; pt.minSamples = 2;
+      pt.tiles.set(3, 3);          // render each frame in 3x3 tiles so the page stays responsive on modest GPUs
+    }
+    if (!$('optPT').checked) { ptStatus(''); return; }      // switched off again while loading
+    ptOn = true; applyPTScene();
+  } catch (e) {
+    console.error(e); ptOn = false; $('optPT').checked = false; ptStatus('');
+    showError('Path tracing is not available on this device/browser.\n' + (e?.message || e));
+  }
+}
+function applyPTScene() {
+  if (!ptOn || !pt) return;
+  grid.visible = false; axes.visible = false;
+  floor.material = floorPT; floor.visible = !!current; sun.castShadow = false;
+  scene.updateMatrixWorld(true);
+  pt.setScene(scene, camera);
+  pt.updateEnvironment();
+}
+function disablePT() {
+  ptOn = false; ptStatus('');
+  floor.material = floorShadow; sun.castShadow = $('optShadow').checked; floor.visible = !!current && $('optShadow').checked;
+  grid.visible = $('optGrid').checked; axes.visible = $('optAxes').checked;
+  renderer.setRenderTarget(null);
+}
+controls.addEventListener('change', () => { if (ptOn) pt.updateCamera(); });
+
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   if (mixer && !paused) mixer.update(dt);
   controls.update();
-  renderer.render(scene, camera);
+  if (ptOn && pt) { pt.renderSample(); ptStatus(`Path tracing · ${Math.floor(pt.samples)} samples`); }
+  else renderer.render(scene, camera);
 });
 
 // ---------- loading ----------
@@ -231,17 +283,18 @@ async function openFiles(fileList) {
     resources.set(f.name.toLowerCase(), u);
   }
   try {
-    let root, notes = [];
+    let root, notes = [], meshInfo = [];
     if (isUsdLayer(model.name) || extOf(model.name) === 'usdz') {
       if (await serverAvailable()) {
         const { blob, info } = await convertOnServer(files);        // real OpenUSD
         const url = URL.createObjectURL(blob); blobUrls.push(url);
         root = await parseModel({ name: 'converted.glb' }, url, makeManager());
         notes = ['Converted with OpenUSD', ...(info.warnings || [])];
+        meshInfo = info.meshes || [];
       }
     }
     if (!root) root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
-    root.userData.notes = notes;
+    root.userData.notes = notes; root.userData.meshInfo = meshInfo;
     disposeCurrent();
     current = root; pivot.add(root);
     prepare(root, model);
@@ -258,7 +311,7 @@ function prepare(root, file) {
   let tris = 0, meshes = 0; const mats = new Set();
   root.traverse((o) => {
     if (o.isMesh || o.isSkinnedMesh) {
-      meshes++;
+      meshes++; o.castShadow = true;
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
       const idx = o.geometry.index;
       tris += (idx ? idx.count : o.geometry.attributes.position.count) / 3;
@@ -268,6 +321,7 @@ function prepare(root, file) {
   });
   applyWire(); applyDouble();
   buildLayers(root);
+  if (root.userData.meshInfo?.length) console.table(root.userData.meshInfo);
   const anims = root.userData.animations || [];
   if (anims.length) {
     mixer = new THREE.AnimationMixer(root);
@@ -302,8 +356,14 @@ function buildLayers(root) {
     const lab = document.createElement('label');
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.id = id; cb.checked = o.visible;
-    cb.onchange = () => { o.visible = cb.checked; };
-    lab.append(cb, ' ', o.name || o.parent?.name || 'mesh ' + (i + 1));
+    cb.onchange = () => { o.visible = cb.checked; if (ptOn) applyPTScene(); };
+    const nm = o.name || o.parent?.name || 'mesh ' + (i + 1);
+    const mi = (root.userData.meshInfo || []).find((m) => m.mesh === nm);
+    if (mi) {
+      const uv = mi.uv ? ` · UV ${mi.uv.varname || 'default'}${mi.uv.scale ? ' scale ' + mi.uv.scale.map((v) => +v.toFixed(3)).join('×') : ''}` : '';
+      lab.title = `material ${mi.material} · texture ${mi.texture ? 'yes' : 'no'}${mi.alpha ? ' · transparent' : ''}${uv}`;
+    }
+    lab.append(cb, ' ', nm);
     list.append(lab);
   });
 }
@@ -322,6 +382,13 @@ function fitView() {
   grid.position.y = box.min.y;
   axes.scale.setScalar(r); axes.position.set(box.min.x, box.min.y, box.min.z);
   sun.position.copy(c).add(new THREE.Vector3(r * 2, r * 4, r * 3));
+  sun.target.position.copy(c); sun.target.updateMatrixWorld();
+  const sc = sun.shadow.camera;
+  sc.left = -r * 2; sc.right = r * 2; sc.top = r * 2; sc.bottom = -r * 2; sc.near = r * 0.1; sc.far = r * 12;
+  sc.updateProjectionMatrix();
+  floor.scale.setScalar(r * 12); floor.position.set(c.x, box.min.y - r * 0.001, c.z);
+  floor.visible = ptOn || $('optShadow').checked;
+  if (ptOn) applyPTScene();
 }
 
 // ---------- UI ----------
@@ -330,9 +397,12 @@ function syncUI() {      // apply the checkbox states as shown (the browser/host
   controls.autoRotate = $('optRotate').checked; controls.autoRotateSpeed = 2;
   pivot.rotation.x = $('optZup').checked ? -Math.PI / 2 : 0; pivot.updateMatrixWorld(true);
   scene.background = new THREE.Color($('optBg').value);
-  const v = +$('optLight').value; sun.intensity = v; scene.environmentIntensity = 0.6 * v;
+  applyLight(); applyEnv();
+  sun.castShadow = $('optShadow').checked && !ptOn; floor.visible = !!current && (ptOn || $('optShadow').checked);
   applyWire(); applyDouble();
 }
+function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v; renderer.toneMappingExposure = +$('optExposure').value; }
+function applyEnv() { scene.environment = envs[$('optEnv').value] ?? envs.studio; }
 function setLoading(v) { $('loading').hidden = !v; }
 function showError(msg) { const e = $('error'); e.hidden = !msg; e.textContent = msg || ''; }
 function eachMat(fn) { current?.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach(fn); }); }
@@ -350,17 +420,21 @@ $('sampleBtn').onclick = async () => {
 };
 $('optGrid').onchange = (e) => (grid.visible = e.target.checked);
 $('optAxes').onchange = (e) => (axes.visible = e.target.checked);
-$('optWire').onchange = applyWire;
-$('optDouble').onchange = applyDouble;
+$('optWire').onchange = () => { applyWire(); if (ptOn) applyPTScene(); };
+$('optDouble').onchange = () => { applyDouble(); if (ptOn) applyPTScene(); };
 $('optRotate').onchange = (e) => { controls.autoRotate = e.target.checked; controls.autoRotateSpeed = 2; };
 $('optZup').onchange = (e) => { pivot.rotation.x = e.target.checked ? -Math.PI / 2 : 0; pivot.updateMatrixWorld(true); fitView(); };
-$('optBg').onchange = (e) => (scene.background = new THREE.Color(e.target.value));
-$('optLight').oninput = (e) => { const v = +e.target.value; sun.intensity = 1.0 * v; scene.environmentIntensity = 0.6 * v; };
+$('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value); if (ptOn) pt.updateEnvironment(); };
+$('optLight').oninput = () => { applyLight(); if (ptOn) { pt.updateLights(); pt.updateEnvironment(); } };
+$('optExposure').oninput = () => { applyLight(); if (ptOn) pt.reset(); };
+$('optEnv').onchange = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
+$('optShadow').onchange = (e) => { sun.castShadow = e.target.checked && !ptOn; floor.visible = !!current && (ptOn || e.target.checked); };
+$('optPT').onchange = (e) => { if (e.target.checked) enablePT(); else disablePT(); };
 $('fitBtn').onclick = fitView;
 $('animSel').onchange = (e) => playAnim(+e.target.value);
 $('animPlay').onclick = (e) => { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; };
 $('shotBtn').onclick = () => {
-  renderer.render(scene, camera);
+  if (!ptOn) renderer.render(scene, camera);
   const a = document.createElement('a');
   a.href = canvas.toDataURL('image/png'); a.download = 'screenshot.png'; a.click();
 };

@@ -154,6 +154,38 @@ def _texture_of(shader_input) -> str | None:
     return _asset_path(f.GetAttr()) if f else None
 
 
+def _st_info(tex_node) -> dict | None:
+    """Describe how a UsdUVTexture node is fed its coordinates: UV set name and any UsdTransform2d."""
+    if tex_node is None:
+        return None
+    st = tex_node.GetInput("st")
+    if not st:
+        return None
+    out: dict = {}
+    src = st.GetConnectedSource()
+    hops = 0
+    while src and hops < 4:
+        sh = UsdShade.Shader(src[0].GetPrim())
+        sid = _val(sh.GetIdAttr()) or ""
+        if sid == "UsdTransform2d":
+            sc, rot, tr = (sh.GetInput(n) for n in ("scale", "rotation", "translation"))
+            out["scale"] = tuple(sc.Get()) if sc and sc.Get() is not None else (1.0, 1.0)
+            out["rot"] = float(rot.Get()) if rot and rot.Get() is not None else 0.0
+            out["trans"] = tuple(tr.Get()) if tr and tr.Get() is not None else (0.0, 0.0)
+            nxt = sh.GetInput("in")
+            src = nxt.GetConnectedSource() if nxt else None
+        elif sid.startswith("UsdPrimvarReader"):
+            vn = sh.GetInput("varname")
+            v = vn.Get() if vn else None
+            if v:
+                out["varname"] = str(v)
+            break
+        else:
+            break
+        hops += 1
+    return out or None
+
+
 def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[str]) -> dict:
     key = str(mat.GetPath())
     if key in cache:
@@ -170,6 +202,9 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
             tex = _texture_of(d)
             if tex:
                 info["image"] = _load_image(tex, warnings)
+                src = d.GetConnectedSource()
+                if src:
+                    info["uv"] = _st_info(UsdShade.Shader(src[0].GetPrim()))
             v = d.Get()
             if v is not None:
                 info["base"][:3] = _rgb(v)
@@ -217,6 +252,8 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
         return _load_image(_asset_path(node.GetPrim().GetAttribute("inputs:file")), warnings, color)
     if info["image"] is None:
         info["image"] = _named_tex("base_color", True)
+        if info["image"] is not None and nodes.get("base_color") is not None:
+            info["uv"] = _st_info(nodes["base_color"])
     if info["normal"] is None:
         info["normal"] = _named_tex("normal_map", False)
     if info["opacity"] is None:
@@ -265,9 +302,10 @@ def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
 
 
 # --------------------------------------------------------------------------- meshes
-def _uv_primvar(mesh: UsdGeom.Mesh):
+def _uv_primvar(mesh: UsdGeom.Mesh, preferred: str | None = None):
     api = UsdGeom.PrimvarsAPI(mesh)
-    for name in ("st", "UVMap", "uv", "st0", "map1"):
+    names = ([preferred] if preferred else []) + ["st", "UVMap", "uv", "st0", "map1"]
+    for name in names:
         pv = api.GetPrimvar(name)
         if pv and pv.HasValue():
             return pv
@@ -326,7 +364,8 @@ def mesh_to_trimesh(prim, xf_cache, to_unit: Gf.Matrix4d, material: dict | None)
         normals = normals / ln
 
     uv = None
-    pv = _uv_primvar(mesh)
+    uvx = (material or {}).get("uv") or {}
+    pv = _uv_primvar(mesh, uvx.get("varname"))
     if pv is not None:
         vals = np.asarray(pv.Get(), dtype=np.float64)
         idx = pv.GetIndices()
@@ -340,6 +379,10 @@ def mesh_to_trimesh(prim, xf_cache, to_unit: Gf.Matrix4d, material: dict | None)
                 uv = vals[flat_v]
         except Exception:
             uv = None
+    if uv is not None and ("scale" in uvx):           # UsdTransform2d: scale, then rotate, then translate
+        sx, sy = uvx["scale"]; t = math.radians(uvx.get("rot", 0.0)); tx, ty = uvx.get("trans", (0.0, 0.0))
+        u, v = uv[:, 0] * sx, uv[:, 1] * sy
+        uv = np.stack([u * math.cos(t) - v * math.sin(t) + tx, u * math.sin(t) + v * math.cos(t) + ty], axis=1)
 
     out = trimesh.Trimesh(vertices=verts, faces=np.arange(len(verts)).reshape(-1, 3),
                           vertex_normals=normals, process=False)
@@ -367,6 +410,7 @@ def convert(root: Path) -> tuple[bytes, dict]:
     cache: dict = {}
     scene = trimesh.Scene()
     n_meshes = n_tris = 0
+    diag: list = []
     seen_names: dict[str, int] = {}
     pred = Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)
     for prim in stage.Traverse(pred):
@@ -400,6 +444,8 @@ def convert(root: Path) -> tuple[bytes, dict]:
         if seen_names[name] > 1:
             name = f"{name}_{seen_names[name]}"
         scene.add_geometry(tm, node_name=name, geom_name=name)
+        diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None,
+                     "uv": material.get("uv"), "alpha": bool(material.get("alpha"))})
         n_meshes += 1; n_tris += len(tm.faces)
 
     if not n_meshes:
@@ -415,4 +461,4 @@ def convert(root: Path) -> tuple[bytes, dict]:
     if unresolved:
         names = sorted({Path(u).name for u in unresolved})
         warnings.append(f"{len(names)} referenced file(s) not included in the upload (e.g. {names[0]})")
-    return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20]}
+    return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag}

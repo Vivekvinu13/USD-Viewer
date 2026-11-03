@@ -44,3 +44,10 @@ python server/app.py                         # http://localhost:8000  (site + AP
 ```
 Drop a **folder** or **.zip** of the whole USD project (root layer + `resources/…`). The root layer is detected
 automatically. Textures in `.exr` can't be shown in GLB and fall back to the material's base colour.
+
+## Look & lighting
+- **Lighting** presets (Studio / Soft room), **ground shadow**, light and exposure sliders.
+- **Path tracing** (checkbox): a progressive, photo-like render using your graphics card (`three-gpu-pathtracer`).
+  The image starts noisy and sharpens while you leave the camera still; moving the camera restarts it.
+  It needs a reasonably modern GPU; on weak hardware keep it off.
+- **Layers** panel: show/hide each mesh. Hover a layer to see which material, texture and UV set it uses.
