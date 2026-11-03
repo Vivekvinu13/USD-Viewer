@@ -14,11 +14,15 @@ import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { VRMLLoader } from 'three/examples/jsm/loaders/VRMLLoader.js';
 import { USDLoader } from 'three/examples/jsm/loaders/USDLoader.js';
+import { TDSLoader } from 'three/examples/jsm/loaders/TDSLoader.js';
+import { AMFLoader } from 'three/examples/jsm/loaders/AMFLoader.js';
+import { KMZLoader } from 'three/examples/jsm/loaders/KMZLoader.js';
+import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
+import { XYZLoader } from 'three/examples/jsm/loaders/XYZLoader.js';
+import { MODEL_EXT, extOf, classify, sniffExt, buildImageSheets, buildPdfSheets } from './anyfile.js';
 import { zipSync, unzipSync } from 'three/examples/jsm/libs/fflate.module.js';
 
 const $ = (id) => document.getElementById(id);
-const MODEL_EXT = ['usd', 'usda', 'usdc', 'usdz', 'gltf', 'glb', 'dae', 'obj', 'fbx', 'stl', 'ply', '3mf', 'wrl'];
-const extOf = (n) => n.split('.').pop().toLowerCase();
 const baseOf = (u) => decodeURIComponent(u.split(/[\\/]/).pop().split('?')[0]).toLowerCase();
 
 // ---------- scene ----------
@@ -145,7 +149,7 @@ function loadWith(loader, url) {
 }
 
 const relPath = (f) => (f.relPath || f.webkitRelativePath || f.name).replace(/^\/+/, '');
-const isUsdLayer = (n) => ['usd', 'usda', 'usdc'].includes(extOf(n));
+const isUsdLayer = (x) => ['usd', 'usda', 'usdc'].includes(typeof x === 'string' ? extOf(x) : (x.kext || extOf(x.name)));
 
 // Expand .zip uploads (USD projects, glTF folders...) into virtual files. .usdz is left alone.
 function expandZips(files) {
@@ -216,13 +220,21 @@ async function loadUsdProject(root, files, manager) {
   return new Promise((res, rej) => new USDLoader(manager).parse(zip.buffer, '', res, rej));
 }
 
+// point clouds: size the points relative to the cloud so they stay visible at any scale
+function pointsFrom(geo) {
+  geo.computeBoundingBox();
+  const diag = geo.boundingBox.getSize(new THREE.Vector3()).length() || 1;
+  const hasColor = !!geo.attributes.color;
+  return new THREE.Points(geo, new THREE.PointsMaterial({ size: diag / 350, vertexColors: hasColor, color: hasColor ? 0xffffff : 0xb8c0cc }));
+}
+
 async function parseModel(file, url, manager, files = [file]) {
-  const ext = extOf(file.name);
+  const ext = file.kext || extOf(file.name);
   switch (ext) {
     case 'usdz':
       return loadWith(new USDLoader(manager), url);
     case 'usd': case 'usda': case 'usdc':
-      if (files.filter((f) => isUsdLayer(f.name)).length > 1 || files.some((f) => relPath(f).includes('/')))
+      if (files.filter((f) => isUsdLayer(f)).length > 1 || files.some((f) => relPath(f).includes('/')))
         return loadUsdProject(file, files, manager);
       return loadWith(new USDLoader(manager), url);
     case 'glb': case 'gltf': {
@@ -252,13 +264,16 @@ async function parseModel(file, url, manager, files = [file]) {
     case 'fbx': return loadWith(new FBXLoader(manager), url);
     case 'wrl': return loadWith(new VRMLLoader(manager), url);
     case '3mf': return loadWith(new ThreeMFLoader(manager), url);
+    case '3ds': return loadWith(new TDSLoader(manager), url);
+    case 'amf': return loadWith(new AMFLoader(manager), url);
+    case 'kmz': return (await loadWith(new KMZLoader(manager), url)).scene;
+    case 'pcd': return loadWith(new PCDLoader(manager), url);
+    case 'xyz': return pointsFrom(await loadWith(new XYZLoader(manager), url));
     case 'stl': case 'ply': {
       const geo = await loadWith(ext === 'stl' ? new STLLoader(manager) : new PLYLoader(manager), url);
       if (!geo.attributes.normal) geo.computeVertexNormals();
       const hasColor = !!geo.attributes.color;
-      if (!geo.index && !geo.attributes.normal && ext === 'ply') {   // point cloud
-        return new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.01, vertexColors: hasColor }));
-      }
+      if (!geo.index && !geo.attributes.normal && ext === 'ply') return pointsFrom(geo);   // point cloud
       return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xb8c0cc, vertexColors: hasColor, roughness: 0.6, metalness: 0.1 }));
     }
     default: throw new Error(`Unsupported format: .${ext}`);
@@ -281,14 +296,31 @@ function disposeCurrent() {
 
 async function openFiles(fileList) {
   setLoading(true); showError(null);
+  // a zip with a missing/odd extension is still a zip: recognise it by content
+  let incoming = [];
+  for (const f of fileList) {
+    const e = extOf(f.name);
+    const known = MODEL_EXT.includes(e) || e === 'zip' || ['pdf', 'exr', 'hdr', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(e);
+    incoming.push(!known && (await sniffExt(f)) === 'zip' ? new File([f], f.name + '.zip') : f);
+  }
   let files;
-  try { files = await expandZips([...fileList]); } catch (e) { setLoading(false); return showError('Could not read the zip file.\n' + (e?.message || e)); }
-  const usd = files.filter((f) => isUsdLayer(f.name));
-  const usdz = files.find((f) => extOf(f.name) === 'usdz');
-  const model = usdz ?? (usd.length ? await pickUsdRoot(usd) : files.find((f) => MODEL_EXT.includes(extOf(f.name))));
-  if (!model) { setLoading(false); return showError('No supported 3D file found.\nSupported: ' + MODEL_EXT.map((e) => '.' + e).join(' ') + ' (or a .zip of them)'); }
-  session = { files, model, variants: {} };
-  await loadSession(false);
+  try { files = await expandZips(incoming); } catch (e) { setLoading(false); return showError('Could not read the zip file.\n' + (e?.message || e)); }
+  // recognise every file by name, or by content when the name does not say
+  const kinds = await Promise.all(files.map(classify));
+  files.forEach((f, i) => { f.kind = kinds[i].kind; f.kext = kinds[i].ext; });
+  const usd = files.filter((f) => isUsdLayer(f));
+  const usdz = files.find((f) => f.kext === 'usdz');
+  const model = usdz ?? (usd.length ? await pickUsdRoot(usd) : files.find((f) => f.kind === '3d'));
+  if (model) { session = { files, model, variants: {}, mode: '3d' }; return loadSession(false); }
+  const pdf = files.find((f) => f.kind === 'pdf');
+  if (pdf) { session = { files, model: pdf, variants: {}, mode: 'pdf' }; return loadSession(false); }
+  const imgs = files.filter((f) => f.kind === 'image' || f.kind === 'hdr');
+  if (imgs.length) { session = { files, model: imgs[0], images: imgs, variants: {}, mode: 'images' }; return loadSession(false); }
+  setLoading(false);
+  const f = [...fileList][0] ?? files[0];
+  const kb = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
+  showError(`Can't preview "${f.name}" (${kb}).\nIt isn't a 3D model, image or PDF that I can recognise, even by its contents.\n` +
+    'Documents such as Word or Excel have no 3D form; export them to PDF to view them here.');
 }
 
 let session = null;        // the files currently shown, so a configuration change can re-convert them
@@ -307,7 +339,9 @@ async function loadSession(keepView) {
   }
   try {
     let root, notes = [], meshInfo = [], srvInfo = null;
-    if (isUsdLayer(model.name) || extOf(model.name) === 'usdz') {
+    if (session.mode === 'pdf') root = await buildPdfSheets(model);
+    else if (session.mode === 'images') root = await buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext })));
+    else if (isUsdLayer(model) || (model.kext || extOf(model.name)) === 'usdz') {
       if (await serverAvailable()) {
         let res;
         try { res = await convertOnServer(files, variants, keepView ? session.project : ''); }
@@ -322,6 +356,7 @@ async function loadSession(keepView) {
     }
     if (!root) root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
     if (token !== sessionToken) return;                       // a newer load started meanwhile
+    if (root.userData.notes?.length) notes = root.userData.notes;
     root.userData.notes = notes; root.userData.meshInfo = meshInfo;
     disposeCurrent();
     current = root; pivot.add(root);

@@ -19,8 +19,13 @@ For formats with sidecar files (OBJ + `.mtl`, glTF + `.bin`/textures, textures f
 Viewer controls: orbit / pan / zoom, grid, wireframe, axes, auto-rotate, Z-up→Y-up fix, double-sided, background,
 light level, fit view, PNG screenshot, glTF/Collada/FBX animation playback, and model stats.
 
+## Open anything
+Drop any file. Files are recognised by name **or by content**, so a misnamed `.dat` that is really a JPEG, or an OBJ with no
+extension, still opens. Images (PNG, JPG, GIF, WebP, BMP, SVG, EXR, HDR) and PDFs are shown as flat sheets in the 3D
+scene. Things with no 3D or picture form (Word, Excel, random binaries) get a clear message instead.
+
 ## Supported formats
-`.usd` `.usda` `.usdc` `.usdz` · `.gltf` `.glb` (Draco/Meshopt) · `.dae` · `.obj` (+`.mtl`) · `.fbx` · `.stl` · `.ply` · `.3mf` · `.wrl`
+`.usd` `.usda` `.usdc` `.usdz` · `.gltf` `.glb` (Draco/Meshopt) · `.dae` · `.obj` (+`.mtl`) · `.fbx` · `.stl` · `.ply` · `.3mf` · `.wrl` · `.3ds` · `.amf` · `.kmz` · point clouds `.pcd` `.xyz` · images · PDF
 
 ## USD limitations
 USD is parsed in-browser by Three.js's `USDLoader`. It handles meshes, transforms, hierarchy, common
