@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3D Viewer – USD, glTF, Collada &amp; more</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">◆ <b>3D Viewer</b><span class="muted"> · USD · glTF · Collada · OBJ · FBX · STL · PLY</span></div>
+    <div class="actions">
+      <button id="sampleBtn" class="ghost">Load sample</button>
+      <button id="openBtn" class="primary">Open file…</button>
+      <input id="fileInput" type="file" multiple hidden
+        accept=".usd,.usda,.usdc,.usdz,.gltf,.glb,.dae,.obj,.mtl,.fbx,.stl,.ply,.3mf,.wrl,.bin,.png,.jpg,.jpeg,.webp,.bmp,.tga" />
+    </div>
+  </header>
+
+  <main>
+    <canvas id="view"></canvas>
+
+    <div id="drop" class="drop">
+      <div class="card">
+        <div class="big">Drop a 3D file here</div>
+        <p>or click <b>Open file…</b></p>
+        <p class="muted">USD / USDA / USDC / USDZ · glTF / GLB · Collada (.dae) · OBJ(+MTL) · FBX · STL · PLY · 3MF · VRML</p>
+        <p class="muted small">For files with external textures or .bin/.mtl files, select or drop them together.<br>Everything is processed in your browser – nothing is uploaded.</p>
+      </div>
+    </div>
+
+    <div id="loading" class="loading" hidden>Loading…</div>
+    <div id="error" class="error" hidden></div>
+
+    <aside id="panel" hidden>
+      <h4>View</h4>
+      <label><input type="checkbox" id="optGrid" checked /> Grid</label>
+      <label><input type="checkbox" id="optWire" /> Wireframe</label>
+      <label><input type="checkbox" id="optAxes" /> Axes</label>
+      <label><input type="checkbox" id="optRotate" /> Auto‑rotate</label>
+      <label><input type="checkbox" id="optZup" /> Z‑up → Y‑up</label>
+      <label><input type="checkbox" id="optDouble" /> Double‑sided</label>
+      <label>Background
+        <select id="optBg">
+          <option value="#1b1d23">Dark</option>
+          <option value="#e9ecf1">Light</option>
+          <option value="#ffffff">White</option>
+          <option value="#3a6b4a">Green</option>
+        </select>
+      </label>
+      <label>Light <input type="range" id="optLight" min="0" max="3" step="0.05" value="1" /></label>
+      <div class="row">
+        <button id="fitBtn" class="ghost">Fit view</button>
+        <button id="shotBtn" class="ghost">Screenshot</button>
+      </div>
+      <div id="animBox" hidden>
+        <h4>Animation</h4>
+        <select id="animSel"></select>
+        <div class="row"><button id="animPlay" class="ghost">Pause</button></div>
+      </div>
+      <h4>Model</h4>
+      <div id="info" class="info"></div>
+    </aside>
+  </main>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
