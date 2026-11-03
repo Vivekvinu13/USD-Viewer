@@ -129,7 +129,7 @@ async function serverAvailable() {
 async function convertOnServer(files) {
   const fd = new FormData();
   for (const f of files) {
-    if (!/\.(usd|usda|usdc|usdz|png|jpe?g|webp|bmp|tga)$/i.test(f.name)) continue;   // skip .exr etc.
+    if (!/\.(usd|usda|usdc|usdz|png|jpe?g|webp|bmp|tga|exr)$/i.test(f.name)) continue;
     fd.append('files', f, relPath(f)); fd.append('paths', relPath(f));
   }
   const r = await fetch('api/convert', { method: 'POST', body: fd });

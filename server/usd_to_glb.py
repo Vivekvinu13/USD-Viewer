@@ -16,6 +16,53 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
+MAX_TEX = 4096
+
+try:
+    import OpenEXR
+except Exception:  # noqa: BLE001  (optional dependency)
+    OpenEXR = None
+
+
+def _read_exr(path: str) -> np.ndarray:
+    """Read an OpenEXR file as float32 HxWxC (C = 1, 3 or 4)."""
+    if OpenEXR is None:
+        raise RuntimeError("OpenEXR is not installed (pip install OpenEXR)")
+    with OpenEXR.File(path) as f:
+        ch = f.channels()
+        for key in ("RGBA", "RGB"):
+            if key in ch:
+                return np.asarray(ch[key].pixels, dtype=np.float32)
+        names = [n for n in ("R", "G", "B", "A") if n in ch]
+        if names:
+            planes = [np.asarray(ch[n].pixels, dtype=np.float32) for n in names]
+            return np.stack(planes, axis=-1)
+        for n in ("Y", "V", "L"):
+            if n in ch:
+                return np.asarray(ch[n].pixels, dtype=np.float32)[..., None]
+        first = next(iter(ch.values()))
+        arr = np.asarray(first.pixels, dtype=np.float32)
+        return arr if arr.ndim == 3 else arr[..., None]
+
+
+def _srgb_encode(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, 0.0, 1.0)
+    return np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
+
+
+def _exr_to_image(path: str, color: bool) -> Image.Image:
+    a = _read_exr(path)
+    if a.shape[-1] == 1:
+        a = np.repeat(a, 3, axis=-1)
+    elif a.shape[-1] == 2:
+        a = np.concatenate([a, np.zeros_like(a[..., :1])], axis=-1)
+    a = np.nan_to_num(a, nan=0.0, posinf=1.0, neginf=0.0)
+    if color:                                   # linear colour -> sRGB for display
+        rgb = _srgb_encode(a[..., :3])
+        a = np.concatenate([rgb, np.clip(a[..., 3:], 0, 1)], axis=-1) if a.shape[-1] == 4 else rgb
+    else:                                       # data maps (normal, roughness, opacity) stay linear
+        a = np.clip(a, 0.0, 1.0)
+    return Image.fromarray((a * 255 + 0.5).astype(np.uint8))
 
 
 # --------------------------------------------------------------------------- root selection
@@ -55,22 +102,32 @@ def _asset_path(attr) -> str | None:
     return v.resolvedPath or None
 
 
-def _load_image(path: str | None, warnings: list[str]):
+_img_cache: dict = {}
+
+
+def _load_image(path: str | None, warnings: list[str], color: bool = True):
+    """Load a texture as a PIL image. .exr files are converted (sRGB-encoded when `color`)."""
     if not path:
         return None
+    key = (path, color)
+    if key in _img_cache:
+        return _img_cache[key]
     ext = Path(path).suffix.lower()
-    if ext not in IMG_OK:
-        warnings.append(f"{ext} textures can't be shown (using fallback colour)")
-        return None
+    img = None
     try:
-        img = Image.open(path)
-        img.load()
-        if max(img.size) > 4096:
-            img.thumbnail((4096, 4096))
-        return img
+        if ext == ".exr":
+            img = _exr_to_image(path, color)
+        elif ext in IMG_OK:
+            img = Image.open(path); img.load()
+        else:
+            warnings.append(f"{ext} textures are not supported (using fallback colour)")
+        if img is not None and max(img.size) > MAX_TEX:
+            img.thumbnail((MAX_TEX, MAX_TEX))
     except Exception as e:  # noqa: BLE001
         warnings.append(f"could not read texture {Path(path).name}: {e}")
-        return None
+        img = None
+    _img_cache[key] = img
+    return img
 
 
 def _rgb(v):
@@ -102,7 +159,7 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
     if key in cache:
         return cache[key]
     info = {"base": [0.8, 0.8, 0.8, 1.0], "metal": 0.0, "rough": 0.6, "image": None, "alpha": False,
-            "name": mat.GetPrim().GetName(), "emissive": None}
+            "name": mat.GetPrim().GetName(), "emissive": None, "normal": None, "opacity": None}
     nodes = _shader_nodes(mat.GetPrim())
 
     # 1) Standard UsdPreviewSurface
@@ -120,6 +177,9 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
             i = ps.GetInput(name)
             if i and i.Get() is not None:
                 info[k] = float(i.Get())
+        n_in = ps.GetInput("normal")
+        if n_in:
+            info["normal"] = _load_image(_texture_of(n_in), warnings, False)
         o = ps.GetInput("opacity")
         if o and o.Get() is not None and float(o.Get()) < 1:
             info["base"][3] = float(o.Get()); info["alpha"] = True
@@ -137,15 +197,38 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
             v = fallback(n)
             if v is not None:
                 info[k] = float(v[0])
-        s = nodes.get("base_color")
-        if s:
-            info["image"] = _load_image(_asset_path(s.GetPrim().GetAttribute("inputs:file")), warnings)
+        def tex(n, color):
+            node = nodes.get(n)
+            return _load_image(_asset_path(node.GetPrim().GetAttribute("inputs:file")), warnings, color) if node else None
+        info["image"] = tex("base_color", True)
+        info["normal"] = tex("normal_map", False)
+        info["opacity"] = tex("opacity", False)
+        if info["opacity"] is not None:
+            info["alpha"] = True
+        else:
+            o = fallback("opacity")
+            if o is not None and float(o[0]) < 1:
+                info["base"][3] = float(o[0]); info["alpha"] = True
+    # 2b) Named texture nodes also count when a UsdPreviewSurface exists but has no connected textures
+    def _named_tex(n, color):
+        node = nodes.get(n)
+        if not node:
+            return None
+        return _load_image(_asset_path(node.GetPrim().GetAttribute("inputs:file")), warnings, color)
+    if info["image"] is None:
+        info["image"] = _named_tex("base_color", True)
+    if info["normal"] is None:
+        info["normal"] = _named_tex("normal_map", False)
+    if info["opacity"] is None:
+        info["opacity"] = _named_tex("opacity", False)
+        if info["opacity"] is not None:
+            info["alpha"] = True
     # 3) Artwork materials take their picture from an `_artwork_controller` prim's texture input
     if info["image"] is None and "artwork" in info["name"].lower():
         for p in stage.Traverse():
             if p.GetName() == "_artwork_controller":
                 a = p.GetAttribute("inputs:param_artwork_texture")
-                img = _load_image(_asset_path(a), warnings)
+                img = _load_image(_asset_path(a), warnings, True)
                 if img is not None:
                     info["image"] = img
                     info["alpha"] = img.mode in ("RGBA", "LA")
@@ -158,9 +241,20 @@ def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
     kw = dict(name=info["name"], metallicFactor=min(max(info["metal"], 0), 1),
               roughnessFactor=min(max(info["rough"], 0), 1), doubleSided=True)
     base = [min(max(c, 0), 1) for c in info["base"]]
-    if info["image"] is not None:
-        kw["baseColorTexture"] = info["image"].convert("RGBA")
+    color_img = info["image"]
+    opacity = info.get("opacity")
+    if opacity is not None:                          # opacity map (R channel) becomes the alpha channel
+        size = color_img.size if color_img is not None else opacity.size
+        rgb = (color_img.convert("RGB").resize(size) if color_img is not None
+               else Image.new("RGB", size, tuple(int(round(c * 255)) for c in base[:3])))
+        alpha = opacity.convert("RGB").split()[0].resize(size)
+        color_img = Image.merge("RGBA", (*rgb.split(), alpha))
+        base = [1, 1, 1, 1]
+    if color_img is not None:
+        kw["baseColorTexture"] = color_img.convert("RGBA")
         base = [1, 1, 1, base[3]]
+    if info.get("normal") is not None:
+        kw["normalTexture"] = info["normal"].convert("RGB")
     kw["baseColorFactor"] = [int(round(c * 255)) for c in base]
     if info["alpha"]:
         kw["alphaMode"] = "BLEND"
