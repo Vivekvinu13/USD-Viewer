@@ -51,3 +51,8 @@ automatically. Textures in `.exr` can't be shown in GLB and fall back to the mat
   The image starts noisy and sharpens while you leave the camera still; moving the camera restarts it.
   It needs a reasonably modern GPU; on weak hardware keep it off.
 - **Layers** panel: show/hide each mesh. Hover a layer to see which material, texture and UV set it uses.
+
+## Grip artwork textures
+Grip's artwork images are 2×2 atlases (label colour / reflection+gloss+metalness / opacity / normal map).
+The converter decodes them the same way Grip's `artwork_texture` shader does, using the material's own
+`roughness_black`, `base_color_black/white` and `use_refractive_artwork` settings.

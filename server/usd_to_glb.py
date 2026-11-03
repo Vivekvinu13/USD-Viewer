@@ -102,6 +102,59 @@ def _asset_path(attr) -> str | None:
     return v.resolvedPath or None
 
 
+def _srgb_decode(x: np.ndarray) -> np.ndarray:
+    return np.where(x <= 0.04045, x / 12.92, np.power((x + 0.055) / 1.055, 2.4))
+
+
+def decode_artwork_atlas(img: Image.Image, p: dict) -> dict:
+    """Grip artwork textures are 2x2 atlases. Mirrors Grip's `artwork_texture` shader:
+        top-left     = label colour (sRGB)
+        bottom-left  = R reflection, G gloss, B metalness factor
+        top-right    = opacity (luminance)
+        bottom-right = normal map
+    Each quarter spans the whole surface UV range. Returns PIL images for a glTF PBR material."""
+    a = np.asarray(img.convert("RGBA"), dtype=np.float32) / 255.0
+    h, w = a.shape[:2]
+    hh, hw = h // 2, w // 2
+    tl, tr = a[:hh, :hw, :3], a[:hh, hw:2 * hw, :3]
+    bl, br = a[hh:2 * hh, :hw, :3], a[hh:2 * hh, hw:2 * hw, :3]
+
+    tl_lin = _srgb_decode(tl)
+    black = np.array(p["base_black"], dtype=np.float32); white = np.array(p["base_white"], dtype=np.float32)
+    base = black + (white - black) * tl_lin
+    refl = 2.0 * bl[..., 0:1]
+    metal = np.clip(refl * bl[..., 2:3], 0.0, 1.0)
+    metal_color = np.clip(refl * tl_lin, 0.0, 1.0)
+    base = base * (1.0 - metal) + metal_color * metal
+    rough = 1.0 - np.clip((1.0 - p["rough_black"]) * 2.0 * bl[..., 1:2], 0.0, 1.0)
+    if p.get("refractive"):
+        opacity = tr[..., 0:1]
+    else:
+        opacity = (0.2126 * tr[..., 0:1] + 0.7152 * tr[..., 1:2] + 0.0722 * tr[..., 2:3])
+
+    def u8(x):
+        return (np.clip(x, 0, 1) * 255 + 0.5).astype(np.uint8)
+    base_rgba = Image.fromarray(np.concatenate([u8(_srgb_encode(base)), u8(opacity)], axis=-1), "RGBA")
+    mr = Image.fromarray(u8(np.concatenate([np.zeros_like(rough), rough, metal], axis=-1)), "RGB")
+    normal = Image.fromarray(u8(br), "RGB")
+    return {"image": base_rgba, "mr": mr, "normal": normal, "has_alpha": float(opacity.min()) < 0.999}
+
+
+def _artwork_params(stage, mat_prim) -> dict:
+    """Read Grip's per-material artwork settings (falling back to the shader's own defaults)."""
+    def fb(name):
+        pr = stage.GetPrimAtPath(f"{mat_prim.GetPath()}/grip_interface/grip_arnold_overrides/{name}")
+        at = pr.GetAttribute("inputs:fallback") if pr else None
+        return _val(at)
+    bb, bw, rb, rf = fb("base_color_black"), fb("base_color_white"), fb("roughness_black"), fb("use_refractive_artwork")
+    return {
+        "base_black": _rgb(bb) if bb is not None else [0.0, 0.0, 0.0],
+        "base_white": _rgb(bw) if bw is not None else [1.0, 1.0, 1.0],
+        "rough_black": float(rb[0]) if rb is not None else 0.2,
+        "refractive": bool(rf is not None and float(rf[0]) > 0.5),
+    }
+
+
 _img_cache: dict = {}
 
 
@@ -260,15 +313,18 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
         info["opacity"] = _named_tex("opacity", False)
         if info["opacity"] is not None:
             info["alpha"] = True
-    # 3) Artwork materials take their picture from an `_artwork_controller` prim's texture input
-    if info["image"] is None and "artwork" in info["name"].lower():
+    # 3) Grip artwork materials: the picture comes from an `_artwork_controller` prim and is a 2x2 atlas
+    if "artwork" in info["name"].lower():
         for p in stage.Traverse():
             if p.GetName() == "_artwork_controller":
                 a = p.GetAttribute("inputs:param_artwork_texture")
-                img = _load_image(_asset_path(a), warnings, True)
+                img = _load_image(_asset_path(a), warnings, False)      # raw: quarters carry data, not just colour
                 if img is not None:
-                    info["image"] = img
-                    info["alpha"] = img.mode in ("RGBA", "LA")
+                    parts = decode_artwork_atlas(img, _artwork_params(stage, mat.GetPrim()))
+                    info.update(image=parts["image"], mr=parts["mr"], normal=parts["normal"],
+                                alpha=parts["has_alpha"], metal=1.0, rough=1.0, atlas=True)
+                    info["base"] = [1.0, 1.0, 1.0, 1.0]
+                    info["opacity"] = None
                     break
     cache[key] = info
     return info
@@ -295,6 +351,8 @@ def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
             kw["alphaMode"] = "BLEND"
     if info.get("normal") is not None:
         kw["normalTexture"] = info["normal"].convert("RGB")
+    if info.get("mr") is not None:
+        kw["metallicRoughnessTexture"] = info["mr"]
     kw["baseColorFactor"] = [int(round(c * 255)) for c in base]
     if info["alpha"]:
         kw["alphaMode"] = "BLEND"
