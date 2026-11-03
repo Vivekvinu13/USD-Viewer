@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "8-fast-weld"
+VERSION = "9-skipped-report"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
@@ -715,13 +715,20 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
     t0 = time.perf_counter()
     seen_names: dict[str, int] = {}
     pred = Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)
+    skipped: list[dict] = []          # parts that are not shown, and why (reported to the viewer)
     for prim in stage.Traverse(pred):
         if not prim.IsA(UsdGeom.Mesh):
+            if prim.IsA(UsdGeom.Gprim):
+                skipped.append({"part": prim.GetName(), "path": str(prim.GetPath()),
+                                "why": f"unsupported shape type {prim.GetTypeName()}", "problem": True})
             continue
         img = UsdGeom.Imageable(prim)
         if img.ComputeVisibility() == UsdGeom.Tokens.invisible:
+            skipped.append({"part": prim.GetName(), "path": str(prim.GetPath()), "why": "hidden in this state", "problem": False})
             continue
         if img.ComputePurpose() in (UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy):
+            skipped.append({"part": prim.GetName(), "path": str(prim.GetPath()),
+                            "why": f"purpose={img.ComputePurpose()}", "problem": False})
             continue
         material = None
         try:
@@ -738,8 +745,10 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
             tm = mesh_to_trimesh(prim, xf_cache, to_unit, material)
         except Exception as e:  # noqa: BLE001
             warnings.append(f"skipped {prim.GetPath()}: {e}")
+            skipped.append({"part": prim.GetName(), "path": str(prim.GetPath()), "why": f"error {type(e).__name__}: {e}", "problem": True})
             continue
         if tm is None:
+            skipped.append({"part": prim.GetName(), "path": str(prim.GetPath()), "why": "no triangles (empty mesh)", "problem": True})
             continue
         name = prim.GetName()
         seen_names[name] = seen_names.get(name, 0) + 1
@@ -778,6 +787,12 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
                 ENV_CACHE.pop(next(iter(ENV_CACHE)))
             ENV_CACHE[eid] = data
             env_info = {"id": eid, "w": 1024, "h": 512, "name": Path(env_path).name}
+    bad = [x for x in skipped if x["problem"]]
+    if bad:
+        warnings.append(f"{len(bad)} part(s) could not be shown: " +
+                        ", ".join(f"{x['part']} ({x['why']})" for x in bad[:6]))
+    for x in skipped:
+        print(f"[skipped] {x['path']}: {x['why']}", flush=True)
     unresolved = []
     try:
         _, _, unresolved = UsdUtils.ComputeAllDependencies(str(root))
@@ -787,4 +802,4 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
         names = sorted({Path(u).name for u in unresolved})
         warnings.append(f"{len(names)} referenced file(s) not included in the upload (e.g. {names[0]})")
     return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag, "version": VERSION,
-                "variants": available_variants, "env": env_info}
+                "variants": available_variants, "env": env_info, "skipped": skipped[:60]}

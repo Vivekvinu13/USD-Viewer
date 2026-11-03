@@ -30,6 +30,15 @@
       </div>
     </div>
 
+    <img id="refOverlay" class="refOverlay" alt="" hidden />
+    <div id="refCard" class="refCard" hidden>
+      <div class="refHead"><b>Reference render</b><span id="refName" class="muted small"></span>
+        <button id="refClose" class="ghost" title="Hide">✕</button></div>
+      <img id="refImg" alt="reference render" />
+      <label class="refRow"><input type="checkbox" id="refOver" /> Overlay on 3D view</label>
+      <label class="refRow">Overlay opacity <input type="range" id="refOpacity" min="0.1" max="1" step="0.05" value="0.5" /></label>
+      <select id="refSel" hidden></select>
+    </div>
     <div id="loading" class="loading" hidden>Loading…</div>
     <div id="error" class="error" hidden></div>
 

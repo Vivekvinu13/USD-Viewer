@@ -326,6 +326,31 @@ async function openFiles(fileList) {
     'Documents such as Word or Excel have no 3D form; export them to PDF to view them here.');
 }
 
+// ---------- reference render: a picture shipped with the project (e.g. a render/ folder) to compare the 3D against
+let refUrls = [];
+function findReferences(files) {
+  const inTex = (f) => /(^|\/)(textures?|resources)\//i.test(relPath(f));
+  const named = (f) => /(^|\/)(renders?|references?|previews?|thumbnails?)\//i.test(relPath(f)) || /render|reference|preview|beauty|hero|thumb/i.test(f.name);
+  return files.filter((f) => f.kind === 'image' && !inTex(f) && named(f)).slice(0, 8);
+}
+function setupReference(files) {
+  refUrls.forEach(URL.revokeObjectURL); refUrls = [];
+  const refs = findReferences(files);
+  $('refCard').hidden = !refs.length; $('refOverlay').hidden = true; $('refOver').checked = false;
+  if (!refs.length) return;
+  refUrls = refs.map((f) => URL.createObjectURL(f));
+  const sel = $('refSel');
+  sel.hidden = refs.length < 2;
+  sel.innerHTML = refs.map((f, i) => `<option value="${i}">${relPath(f)}</option>`).join('');
+  const show = (i) => { $('refImg').src = refUrls[i]; $('refOverlay').src = refUrls[i]; $('refName').textContent = refs[i].name; };
+  sel.onchange = () => show(+sel.value);
+  show(0);
+}
+$('refClose').onclick = () => { $('refCard').hidden = true; $('refOverlay').hidden = true; $('refOver').checked = false; };
+$('refOver').onchange = (e) => { $('refOverlay').hidden = !e.target.checked; };
+$('refOpacity').oninput = (e) => { $('refOverlay').style.opacity = e.target.value; };
+$('refImg').onclick = () => window.open($('refImg').src, '_blank');
+
 let loadAbort = null;
 let session = null;        // the files currently shown, so a configuration change can re-convert them
 let sessionToken = 0;
@@ -362,7 +387,7 @@ async function loadSession(keepView) {
     if (!root) root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
     if (token !== sessionToken) return;                       // a newer load started meanwhile
     if (root.userData.notes?.length) notes = root.userData.notes;
-    root.userData.notes = notes; root.userData.meshInfo = meshInfo;
+    root.userData.notes = notes; root.userData.meshInfo = meshInfo; root.userData.skipped = srvInfo?.skipped || [];
     disposeCurrent();
     current = root; pivot.add(root);
     prepare(root, model);
@@ -374,6 +399,7 @@ async function loadSession(keepView) {
     }
     $('drop').classList.add('hidden');
     $('panel').hidden = false;
+    if (!keepView) setupReference(session.mode === '3d' ? files : []);
     if (ptOn) applyPTScene();
   } catch (e) {
     if (e?.name === 'AbortError') return;                    // superseded by a newer load
@@ -670,6 +696,7 @@ $('diagBtn').onclick = async () => {
     `notes: ${(current?.userData.notes || []).join(' | ')}`,
     `variants: ${JSON.stringify(session?.variants || {})}`, `meshes:`,
     ...(current?.userData.meshInfo || []).map((m) => '  ' + JSON.stringify(m)),
+    `skipped parts: ${JSON.stringify(current?.userData.skipped || [])}`,
   ];
   current?.traverse((o) => {
     if (o.isMesh) for (const m of [].concat(o.material)) {

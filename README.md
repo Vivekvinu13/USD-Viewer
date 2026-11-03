@@ -89,3 +89,10 @@ Meshes are triangulated and welded with vectorised NumPy (a 3M-triangle bottle c
 JPEG; only one conversion runs at a time (others wait in a queue), off the web server's main thread; a request the
 browser has abandoned is skipped. If a conversion runs out of memory the server now says so instead of an empty error.
 **Copy diagnostics** (side panel) copies the per-material details to send when a model looks wrong.
+
+## Reference render and skipped parts
+If a project ships a picture of the intended look (a `render/`, `reference/` or `preview/` folder, or a file named like
+`render`, `preview`, `beauty`), the viewer shows it in a **Reference render** card with an *Overlay on 3D view* option, so
+the 3D can be compared against it. A reference image cannot be turned into 3D geometry; it is a visual target only.
+Parts the converter could not show (unsupported shape types, empty meshes, errors) are listed in the Notes line, and every
+part hidden by the current state is listed in **Copy diagnostics**.

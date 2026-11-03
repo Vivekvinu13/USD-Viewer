@@ -35,3 +35,11 @@ aside input[type=range] { width: 110px; }
 .layers { display: flex; flex-direction: column; max-height: 180px; overflow: auto; }
 .layers label { font-size: 12px; padding: 2px 0; justify-content: flex-start; word-break: break-all; }
 .ptStatus { font-size: 12px; color: var(--muted); min-height: 16px; }
+
+.refCard { position: absolute; left: 12px; bottom: 12px; width: 230px; padding: 8px; background: rgba(31,34,41,.94); border: 1px solid var(--line); border-radius: 10px; z-index: 4; display: flex; flex-direction: column; gap: 6px; }
+.refCard img { width: 100%; max-height: 260px; object-fit: contain; background: #fff; border-radius: 6px; cursor: zoom-in; }
+.refHead { display: flex; align-items: center; gap: 6px; } .refHead b { font-size: 12px; } .refHead span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.refHead button { padding: 0 7px; line-height: 1.4; }
+.refRow { display: flex; align-items: center; gap: 6px; font-size: 12px; justify-content: space-between; } .refRow input[type=range] { width: 90px; }
+.refCard select { background: #14161a; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px; }
+.refOverlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; z-index: 3; opacity: .5; }
