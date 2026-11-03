@@ -13,6 +13,7 @@ import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { VRMLLoader } from 'three/examples/jsm/loaders/VRMLLoader.js';
 import { USDLoader } from 'three/examples/jsm/loaders/USDLoader.js';
+import { zipSync, unzipSync } from 'three/examples/jsm/libs/fflate.module.js';
 
 const $ = (id) => document.getElementById(id);
 const MODEL_EXT = ['usd', 'usda', 'usdc', 'usdz', 'gltf', 'glb', 'dae', 'obj', 'fbx', 'stl', 'ply', '3mf', 'wrl'];
@@ -82,10 +83,61 @@ function loadWith(loader, url) {
   return new Promise((res, rej) => loader.load(url, res, undefined, rej));
 }
 
-async function parseModel(file, url, manager) {
+const relPath = (f) => (f.relPath || f.webkitRelativePath || f.name).replace(/^\/+/, '');
+const isUsdLayer = (n) => ['usd', 'usda', 'usdc'].includes(extOf(n));
+
+// Expand .zip uploads (USD projects, glTF folders...) into virtual files. .usdz is left alone.
+function expandZips(files) {
+  const out = [];
+  for (const f of files) {
+    if (extOf(f.name) !== 'zip') { out.push(f); continue; }
+    return f.arrayBuffer().then((buf) => {
+      const entries = unzipSync(new Uint8Array(buf));
+      const list = Object.entries(entries)
+        .filter(([n, b]) => !n.endsWith('/') && b.length && !n.includes('__MACOSX') && !n.split('/').pop().startsWith('._'))
+        .map(([n, b]) => { const vf = new File([b], n.split('/').pop()); vf.relPath = n; return vf; });
+      return expandZips([...list, ...files.filter((x) => x !== f)]);
+    });
+  }
+  return out;
+}
+
+// Choose the root layer of a multi-file USD project: the layer nothing else references.
+async function pickUsdRoot(layers) {
+  if (layers.length === 1) return layers[0];
+  const refd = new Set();
+  const dec = new TextDecoder();
+  for (const f of layers) {
+    const head = new Uint8Array(await f.slice(0, 8).arrayBuffer());
+    if (String.fromCharCode(...head) === 'PXR-USDC') continue;          // binary: cannot scan cheaply
+    const txt = dec.decode(await f.arrayBuffer());
+    for (const m of txt.matchAll(/@([^@\n]+)@/g)) refd.add(baseOf(m[1]));
+  }
+  const depth = (f) => relPath(f).split('/').length;
+  const score = (f) => (refd.has(f.name.toLowerCase()) ? 1000 : 0) + depth(f) * 10 - (/preview|scene|root|main|stage/i.test(f.name) ? 5 : 0);
+  return [...layers].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name))[0];
+}
+
+// Feed the whole project to USDLoader as a virtual USDZ so references/sublayers/textures resolve.
+async function loadUsdProject(root, files, manager) {
+  const entries = {};
+  entries[relPath(root)] = [new Uint8Array(await root.arrayBuffer()), { level: 0 }];   // root must be first
+  for (const f of files) {
+    if (f === root || !/\.(usd|usda|usdc|png|jpe?g|avif)$/i.test(f.name)) continue;
+    entries[relPath(f)] = [new Uint8Array(await f.arrayBuffer()), { level: 0 }];
+  }
+  const zip = zipSync(entries);
+  return new Promise((res, rej) => new USDLoader(manager).parse(zip.buffer, '', res, rej));
+}
+
+async function parseModel(file, url, manager, files = [file]) {
   const ext = extOf(file.name);
   switch (ext) {
-    case 'usd': case 'usda': case 'usdc': case 'usdz':
+    case 'usdz':
+      return loadWith(new USDLoader(manager), url);
+    case 'usd': case 'usda': case 'usdc':
+      if (files.filter((f) => isUsdLayer(f.name)).length > 1 || files.some((f) => relPath(f).includes('/')))
+        return loadUsdProject(file, files, manager);
       return loadWith(new USDLoader(manager), url);
     case 'glb': case 'gltf': {
       const l = new GLTFLoader(manager);
@@ -142,10 +194,13 @@ function disposeCurrent() {
 }
 
 async function openFiles(fileList) {
-  const files = [...fileList];
-  const model = files.find((f) => MODEL_EXT.includes(extOf(f.name)));
-  if (!model) return showError('No supported 3D file found.\nSupported: ' + MODEL_EXT.map((e) => '.' + e).join(' '));
   setLoading(true); showError(null);
+  let files;
+  try { files = await expandZips([...fileList]); } catch (e) { setLoading(false); return showError('Could not read the zip file.\n' + (e?.message || e)); }
+  const usd = files.filter((f) => isUsdLayer(f.name));
+  const usdz = files.find((f) => extOf(f.name) === 'usdz');
+  const model = usdz ?? (usd.length ? await pickUsdRoot(usd) : files.find((f) => MODEL_EXT.includes(extOf(f.name))));
+  if (!model) { setLoading(false); return showError('No supported 3D file found.\nSupported: ' + MODEL_EXT.map((e) => '.' + e).join(' ') + ' (or a .zip of them)'); }
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   resources = new Map();
   for (const f of files) {
@@ -153,10 +208,9 @@ async function openFiles(fileList) {
     resources.set(f.name.toLowerCase(), u);
   }
   try {
-    const root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager());
+    const root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
     disposeCurrent();
     current = root; pivot.add(root);
-    $('optZup').checked = false; pivot.rotation.x = 0;
     prepare(root, model);
     $('drop').classList.add('hidden');
     $('panel').hidden = false;
@@ -187,7 +241,11 @@ function prepare(root, file) {
     $('animSel').innerHTML = anims.map((c, i) => `<option value="${i}">${c.name || 'Clip ' + (i + 1)}</option>`).join('');
     playAnim(0); $('animBox').hidden = false;
   }
+  syncUI();
   fitView();
+  if (!meshes && !root.getObjectByProperty('isPoints', true)) {
+    showError(`"${file.name}" loaded but contains no geometry.\nIf it references other files (e.g. @./asset.usda@), drop the whole folder or a .zip of the project together.`);
+  }
   const s = new THREE.Box3().setFromObject(pivot).getSize(new THREE.Vector3());
   const rows = [
     ['File', file.name], ['Size', (file.size / 1048576).toFixed(2) + ' MB'],
@@ -214,6 +272,14 @@ function fitView() {
 }
 
 // ---------- UI ----------
+function syncUI() {      // apply the checkbox states as shown (the browser/host may restore them)
+  grid.visible = $('optGrid').checked; axes.visible = $('optAxes').checked;
+  controls.autoRotate = $('optRotate').checked; controls.autoRotateSpeed = 2;
+  pivot.rotation.x = $('optZup').checked ? -Math.PI / 2 : 0; pivot.updateMatrixWorld(true);
+  scene.background = new THREE.Color($('optBg').value);
+  const v = +$('optLight').value; sun.intensity = v; scene.environmentIntensity = 0.6 * v;
+  applyWire(); applyDouble();
+}
 function setLoading(v) { $('loading').hidden = !v; }
 function showError(msg) { const e = $('error'); e.hidden = !msg; e.textContent = msg || ''; }
 function eachMat(fn) { current?.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach(fn); }); }
@@ -223,6 +289,8 @@ function playAnim(i) { actions.forEach((a) => a.stop()); actions[i]?.reset().pla
 
 $('openBtn').onclick = () => $('fileInput').click();
 $('fileInput').onchange = (e) => { if (e.target.files.length) openFiles(e.target.files); e.target.value = ''; };
+$('folderBtn').onclick = () => $('folderInput').click();
+$('folderInput').onchange = (e) => { if (e.target.files.length) openFiles(e.target.files); e.target.value = ''; };
 $('sampleBtn').onclick = async () => {
   const r = await fetch('./sample.usda');
   openFiles([new File([await r.blob()], 'sample.usda')]);
@@ -262,7 +330,7 @@ async function collectDropped(dt) {
   if (!entries.length) return [...dt.files];
   const out = [];
   const walk = async (en) => {
-    if (en.isFile) out.push(await new Promise((r, j) => en.file(r, j)));
+    if (en.isFile) { const f = await new Promise((r, j) => en.file(r, j)); f.relPath = en.fullPath; out.push(f); }
     else if (en.isDirectory) {
       const rd = en.createReader();
       let batch;

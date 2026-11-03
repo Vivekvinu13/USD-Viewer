@@ -11,9 +11,11 @@
     <div class="brand">◆ <b>3D Viewer</b><span class="muted"> · USD · glTF · Collada · OBJ · FBX · STL · PLY</span></div>
     <div class="actions">
       <button id="sampleBtn" class="ghost">Load sample</button>
+      <button id="folderBtn" class="ghost">Open folder…</button>
       <button id="openBtn" class="primary">Open file…</button>
+      <input id="folderInput" type="file" webkitdirectory multiple hidden />
       <input id="fileInput" type="file" multiple hidden
-        accept=".usd,.usda,.usdc,.usdz,.gltf,.glb,.dae,.obj,.mtl,.fbx,.stl,.ply,.3mf,.wrl,.bin,.png,.jpg,.jpeg,.webp,.bmp,.tga" />
+        accept=".usd,.usda,.usdc,.usdz,.gltf,.glb,.dae,.obj,.mtl,.fbx,.stl,.ply,.3mf,.wrl,.bin,.png,.jpg,.jpeg,.webp,.bmp,.tga,.zip" />
     </div>
   </header>
 
@@ -23,7 +25,7 @@
     <div id="drop" class="drop">
       <div class="card">
         <div class="big">Drop a 3D file here</div>
-        <p>or click <b>Open file…</b></p>
+        <p>or click <b>Open file…</b> / <b>Open folder…</b> &nbsp;·&nbsp; a <b>.zip</b> of a whole project also works</p>
         <p class="muted">USD / USDA / USDC / USDZ · glTF / GLB · Collada (.dae) · OBJ(+MTL) · FBX · STL · PLY · 3MF · VRML</p>
         <p class="muted small">For files with external textures or .bin/.mtl files, select or drop them together.<br>Everything is processed in your browser – nothing is uploaded.</p>
       </div>
