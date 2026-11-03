@@ -251,8 +251,11 @@ def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
         color_img = Image.merge("RGBA", (*rgb.split(), alpha))
         base = [1, 1, 1, 1]
     if color_img is not None:
-        kw["baseColorTexture"] = color_img.convert("RGBA")
+        rgba = color_img.convert("RGBA")
+        kw["baseColorTexture"] = rgba
         base = [1, 1, 1, base[3]]
+        if rgba.getchannel("A").getextrema()[0] < 255:      # texture has transparent areas: honour them
+            kw["alphaMode"] = "BLEND"
     if info.get("normal") is not None:
         kw["normalTexture"] = info["normal"].convert("RGB")
     kw["baseColorFactor"] = [int(round(c * 255)) for c in base]

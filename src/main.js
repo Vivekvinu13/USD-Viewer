@@ -267,6 +267,7 @@ function prepare(root, file) {
     }
   });
   applyWire(); applyDouble();
+  buildLayers(root);
   const anims = root.userData.animations || [];
   if (anims.length) {
     mixer = new THREE.AnimationMixer(root);
@@ -288,6 +289,23 @@ function prepare(root, file) {
   const notes = root.userData.notes || [];
   if (notes.length) rows.push(['Notes', notes.join(' · ')]);
   $('info').innerHTML = rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('');
+}
+
+function buildLayers(root) {
+  const box = $('layerBox'), list = $('layers');
+  list.innerHTML = '';
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh || o.isPoints) meshes.push(o); });
+  box.hidden = meshes.length < 2 || meshes.length > 60;
+  meshes.forEach((o, i) => {
+    const id = 'layer' + i;
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.id = id; cb.checked = o.visible;
+    cb.onchange = () => { o.visible = cb.checked; };
+    lab.append(cb, ' ', o.name || o.parent?.name || 'mesh ' + (i + 1));
+    list.append(lab);
+  });
 }
 
 function fitView() {
