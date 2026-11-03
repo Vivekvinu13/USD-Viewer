@@ -118,6 +118,29 @@ async function pickUsdRoot(layers) {
   return [...layers].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name))[0];
 }
 
+// ---- optional server: real OpenUSD converts the project to GLB (handles payloads, variants, big files)
+let apiOk = null;
+async function serverAvailable() {
+  if (apiOk !== null) return apiOk;
+  try { const r = await fetch('api/health', { cache: 'no-store' }); apiOk = r.ok && (await r.json()).ok === true; }
+  catch { apiOk = false; }
+  return apiOk;
+}
+async function convertOnServer(files) {
+  const fd = new FormData();
+  for (const f of files) {
+    if (!/\.(usd|usda|usdc|usdz|png|jpe?g|webp|bmp|tga)$/i.test(f.name)) continue;   // skip .exr etc.
+    fd.append('files', f, relPath(f)); fd.append('paths', relPath(f));
+  }
+  const r = await fetch('api/convert', { method: 'POST', body: fd });
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json()).detail || msg; } catch { /* not json */ }
+    throw new Error(msg);
+  }
+  return { blob: await r.blob(), info: JSON.parse(r.headers.get('X-Convert-Info') || '{}') };
+}
+
 // Feed the whole project to USDLoader as a virtual USDZ so references/sublayers/textures resolve.
 async function loadUsdProject(root, files, manager) {
   const entries = {};
@@ -208,7 +231,17 @@ async function openFiles(fileList) {
     resources.set(f.name.toLowerCase(), u);
   }
   try {
-    const root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
+    let root, notes = [];
+    if (isUsdLayer(model.name) || extOf(model.name) === 'usdz') {
+      if (await serverAvailable()) {
+        const { blob, info } = await convertOnServer(files);        // real OpenUSD
+        const url = URL.createObjectURL(blob); blobUrls.push(url);
+        root = await parseModel({ name: 'converted.glb' }, url, makeManager());
+        notes = ['Converted with OpenUSD', ...(info.warnings || [])];
+      }
+    }
+    if (!root) root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
+    root.userData.notes = notes;
     disposeCurrent();
     current = root; pivot.add(root);
     prepare(root, model);
@@ -252,6 +285,8 @@ function prepare(root, file) {
     ['Meshes', meshes.toLocaleString()], ['Triangles', Math.round(tris).toLocaleString()],
     ['Materials', mats.size], ['Dimensions', [s.x, s.y, s.z].map((v) => +v.toPrecision(3)).join(' × ')],
   ];
+  const notes = root.userData.notes || [];
+  if (notes.length) rows.push(['Notes', notes.join(' · ')]);
   $('info').innerHTML = rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('');
 }
 

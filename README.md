@@ -29,3 +29,18 @@ heavy composition (cross-file references/payloads/variants), Omniverse-specific 
 RTX path-traced lighting are not supported. Primitive shapes (`Cube`/`Sphere`/…) ignore `displayColor`.
 Tip: packaging as `.usdz` (self-contained) gives the best results. For full-fidelity USD, a server-side
 `usd-core` conversion to glTF could be added.
+
+## Full-fidelity USD (recommended for Omniverse / Arnold / production assets)
+Real-world USD projects use payloads, nested variants, layered materials and large binary `.usdc` files that a
+browser-only loader can't compose. The optional server uses real OpenUSD (`usd-core`) to compose the scene and
+streams back a GLB that the viewer renders. The viewer detects it automatically and falls back to the in-browser
+loader when it isn't running.
+
+```bash
+cd usd-viewer
+npm install && npm run build                 # once (the zip already includes dist/)
+pip install -r server/requirements.txt
+python server/app.py                         # http://localhost:8000  (site + API)
+```
+Drop a **folder** or **.zip** of the whole USD project (root layer + `resources/…`). The root layer is detected
+automatically. Textures in `.exr` can't be shown in GLB and fall back to the material's base colour.
