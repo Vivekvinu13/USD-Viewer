@@ -94,8 +94,15 @@ async function enablePT() {
     showError('Path tracing is not available on this device/browser.\n' + (e?.message || e));
   }
 }
+function setNested(on) {
+  current?.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) if (m.userData.nested !== undefined) { m.transmission = on ? m.userData.nested : 0; m.needsUpdate = true; }
+  });
+}
 function applyPTScene() {
   if (!ptOn || !pt) return;
+  setNested(true);
   grid.visible = false; axes.visible = false;
   floor.material = floorPT; floor.visible = !!current; sun.castShadow = false;
   scene.updateMatrixWorld(true);
@@ -103,7 +110,7 @@ function applyPTScene() {
   pt.updateEnvironment();
 }
 function disablePT() {
-  ptOn = false; ptStatus('');
+  ptOn = false; ptStatus(''); setNested(false);
   floor.material = floorShadow; sun.castShadow = $('optShadow').checked; floor.visible = !!current && $('optShadow').checked;
   grid.visible = $('optGrid').checked; axes.visible = $('optAxes').checked;
   renderer.setRenderTarget(null);
@@ -179,10 +186,11 @@ async function serverAvailable() {
   catch { apiOk = false; }
   return apiOk;
 }
-async function convertOnServer(files, variants = {}) {
+async function convertOnServer(files, variants = {}, project = '') {
   const fd = new FormData();
   if (Object.keys(variants).length) fd.append('variants', JSON.stringify(variants));
-  for (const f of files) {
+  if (project) fd.append('project', project);               // files already on the server: no re-upload
+  for (const f of project ? [] : files) {
     if (!/\.(usd|usda|usdc|usdz|png|jpe?g|webp|bmp|tga|exr)$/i.test(f.name)) continue;
     fd.append('files', f, relPath(f)); fd.append('paths', relPath(f));
   }
@@ -190,7 +198,7 @@ async function convertOnServer(files, variants = {}) {
   if (!r.ok) {
     let msg = r.statusText;
     try { msg = (await r.json()).detail || msg; } catch { /* not json */ }
-    throw new Error(msg);
+    const err = new Error(msg); err.status = r.status; throw err;
   }
   return { blob: await r.blob(), info: JSON.parse(r.headers.get('X-Convert-Info') || '{}') };
 }
@@ -300,7 +308,11 @@ async function loadSession(keepView) {
     let root, notes = [], meshInfo = [], srvInfo = null;
     if (isUsdLayer(model.name) || extOf(model.name) === 'usdz') {
       if (await serverAvailable()) {
-        const { blob, info } = await convertOnServer(files, variants);        // real OpenUSD
+        let res;
+        try { res = await convertOnServer(files, variants, keepView ? session.project : ''); }
+        catch (e) { if (e.status === 410) res = await convertOnServer(files, variants); else throw e; }   // expired: re-send
+        const { blob, info } = res;                                           // real OpenUSD
+        session.project = info.project || '';
         const url = URL.createObjectURL(blob); blobUrls.push(url);
         root = await parseModel({ name: 'converted.glb' }, url, makeManager());
         notes = [`Converted with OpenUSD (converter ${info.version || 'old'})`, ...(info.warnings || [])];
@@ -346,6 +358,9 @@ async function setupFromServer(info, keepView) {
     $('optArtVar').innerHTML = art.options.map((o) => `<option value="${o}">${o[0].toUpperCase() + o.slice(1)}</option>`).join('');
     $('optArtVar').value = art.selected;
   }
+  if ((info.meshes || []).some((m) => m.glass) && !keepView) {      // clear liquid/glass reads best on a light backdrop
+    $('optBg').value = '#ffffff'; scene.background = new THREE.Color('#ffffff'); if (ptOn) pt.updateEnvironment();
+  }
   if (info.env && !keepView) {
     try {
       const r = await fetch(`api/env/${info.env.id}`);
@@ -380,10 +395,23 @@ function prepare(root, file) {
   });
   applyWire(); applyDouble();
   buildLayers(root);
+  root.updateMatrixWorld(true);
+  const trans = [];
   root.traverse((o) => {
     if (!o.isMesh) return;
-    for (const m of [].concat(o.material)) if (m.transmission > 0) { m.thickness = 0.0006; m.roughness = Math.min(m.roughness ?? 0.05, 0.05); }
+    for (const m of [].concat(o.material)) if (m.transmission > 0) {
+      m.thickness = 0.0006; m.roughness = Math.min(m.roughness ?? 0.05, 0.05);
+      trans.push({ m, box: new THREE.Box3().setFromObject(o) });
+    }
   });
+  // The normal renderer cannot see one transparent object through another (e.g. liquid inside a glass bottle),
+  // so an inner transmissive object is shown as a tinted solid. The path tracer restores true transmission.
+  for (const a of trans) for (const b of trans) {
+    if (a !== b && b.box.containsBox(a.box) && !a.box.containsBox(b.box) && a.m.userData.nested === undefined) {
+      a.m.userData.nested = a.m.transmission;
+      if (!ptOn) { a.m.transmission = 0; a.m.needsUpdate = true; }
+    }
+  }
   if (root.userData.meshInfo?.length) console.table(root.userData.meshInfo);
   const anims = root.userData.animations || [];
   if (anims.length) {
@@ -474,7 +502,16 @@ function applyEnv() {
   const r = THREE.MathUtils.degToRad(+$('optEnvRot').value);
   scene.environmentRotation.set(0, r, 0); scene.backgroundRotation.set(0, r, 0);
 }
-function setLoading(v) { $('loading').hidden = !v; }
+let loadTimer = null;
+function setLoading(v) {
+  const el = $('loading'); el.hidden = !v;
+  clearInterval(loadTimer);
+  if (v) {
+    const t0 = Date.now();
+    const tick = () => { el.textContent = `Loading… ${Math.round((Date.now() - t0) / 1000)} s (large projects can take a minute)`; };
+    tick(); loadTimer = setInterval(tick, 1000);
+  }
+}
 function showError(msg) { const e = $('error'); e.hidden = !msg; e.textContent = msg || ''; }
 function eachMat(fn) { current?.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach(fn); }); }
 function applyWire() { const w = $('optWire').checked; eachMat((m) => (m.wireframe = w)); }

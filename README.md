@@ -64,3 +64,10 @@ The converter decodes them the same way Grip's `artwork_texture` shader does, us
 - **Show artwork**: untick to see the bare aluminium can.
 - **Lighting**: Bright studio, Dark studio, Soft room, and *Grip studio (from file)* when the project has a
   DomeLight image. **Light angle** rotates the environment.
+
+## Glass and liquids
+Transmissive materials (bottles, liquids, droplets) use the material's *transmission colour* texture as their tint,
+plus its real index of refraction. A model with clear glass opens on a white background. In the normal view an
+object nested inside another transmissive object (liquid in a bottle) is shown as a tinted solid; **Path tracing**
+renders true refraction. Big textures are downsampled to 2048 px while decoding, and switching Wet/Dry reuses the
+files already on the server, so it no longer re-uploads or re-decodes them.

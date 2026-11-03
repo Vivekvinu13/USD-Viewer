@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -16,11 +18,26 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from usd_to_glb import ENV_CACHE, VERSION, convert, pick_root
+from usd_to_glb import ENV_CACHE, VERSION, _img_cache, convert, pick_root
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_BYTES = 2 * 1024**3
 app = FastAPI(title="3D Viewer API")
+
+PROJECTS: dict[str, dict] = {}        # id -> {"dir": Path, "t": last use}; lets a state switch skip the re-upload
+PROJECT_TTL = 3600
+MAX_PROJECTS = 3
+
+
+def _evict() -> None:
+    now = time.time()
+    gone = [k for k, v in PROJECTS.items() if now - v["t"] > PROJECT_TTL]
+    while len(PROJECTS) - len(gone) > MAX_PROJECTS:
+        gone.append(min((k for k in PROJECTS if k not in gone), key=lambda k: PROJECTS[k]["t"]))
+    for pid in gone:
+        shutil.rmtree(PROJECTS.pop(pid)["dir"], ignore_errors=True)
+    if gone:
+        _img_cache.clear()                 # cached textures may point into deleted folders
 
 
 def _safe(rel: str) -> PurePosixPath:
@@ -37,12 +54,17 @@ def health():
 
 
 @app.post("/api/convert")
-async def convert_usd(files: list[UploadFile] = File(...), paths: list[str] = Form(default=[]),
-                      variants: str = Form(default="")):
-    work = Path(tempfile.mkdtemp(prefix="usdconv-"))
+async def convert_usd(files: list[UploadFile] = File(default=[]), paths: list[str] = Form(default=[]),
+                      variants: str = Form(default=""), project: str = Form(default="")):
+    _evict()
+    reuse = PROJECTS.get(project) if project else None
+    if project and not reuse:
+        raise HTTPException(410, "project expired")          # client re-sends the files
+    work = reuse["dir"] if reuse else Path(tempfile.mkdtemp(prefix="usdconv-"))
+    ok = False
     try:
         total = 0
-        for i, up in enumerate(files):
+        for i, up in enumerate([] if reuse else files):
             rel = _safe(paths[i] if i < len(paths) else (up.filename or f"file{i}"))
             dest = work.joinpath(*rel.parts)
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -65,13 +87,18 @@ async def convert_usd(files: list[UploadFile] = File(...), paths: list[str] = Fo
             except ValueError:
                 sel = {}
             glb, info = convert(root, {str(k): str(v) for k, v in sel.items()} if isinstance(sel, dict) else {})
+            pid = project or uuid.uuid4().hex
+            PROJECTS[pid] = {"dir": work, "t": time.time()}
+            info["project"] = pid
+            ok = True
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
             raise HTTPException(422, str(e)) from e
         return Response(glb, media_type="model/gltf-binary", headers={"X-Convert-Info": json.dumps(info)})
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        if not ok and not reuse:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 @app.get("/api/env/{env_id}")

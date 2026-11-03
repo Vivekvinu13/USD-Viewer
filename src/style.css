@@ -1,5 +1,6 @@
 :root { --bg:#14161a; --panel:#1f2229; --line:#2e323b; --text:#e6e8ec; --muted:#8b93a1; --accent:#4f9cff; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; display: flex; flex-direction: column; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }

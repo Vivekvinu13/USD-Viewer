@@ -14,14 +14,15 @@ import trimesh
 from PIL import Image
 import json
 import struct
+import time
 import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "4-variants-env-glass"
+VERSION = "5-glass-tint-fast"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
-MAX_TEX = 4096
+MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
 
 try:
     import OpenEXR
@@ -55,8 +56,18 @@ def _srgb_encode(x: np.ndarray) -> np.ndarray:
     return np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
 
 
+def _box_reduce(a: np.ndarray, limit: int) -> np.ndarray:
+    """Average-pool big images down so the longest side is at most `limit` (saves memory and time)."""
+    h, w = a.shape[:2]
+    f = -(-max(h, w) // limit)
+    if f <= 1:
+        return a
+    h2, w2 = h // f * f, w // f * f
+    return a[:h2, :w2].reshape(h2 // f, f, w2 // f, f, a.shape[2]).mean(axis=(1, 3), dtype=np.float32)
+
+
 def _exr_to_image(path: str, color: bool) -> Image.Image:
-    a = _read_exr(path)
+    a = _box_reduce(_read_exr(path), MAX_TEX)
     if a.shape[-1] == 1:
         a = np.repeat(a, 3, axis=-1)
     elif a.shape[-1] == 2:
@@ -333,11 +344,25 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
                     break
     tr = nodes.get("transmission")
     trv = _val(tr.GetPrim().GetAttribute("inputs:fallback")) if tr else None
-    if trv is not None and float(trv[0]) >= 0.5:         # water droplets, glass: transmissive material
+    if trv is not None and float(trv[0]) >= 0.5:         # water droplets, glass, liquids: transmissive material
         info["glass"] = True
-        info["base"][:3] = [1.0, 1.0, 1.0]
+        info["transmission"] = min(max(float(trv[0]), 0.0), 1.0)
         info["metal"] = 0.0
         info["rough"] = min(info["rough"], 0.08)
+        # in glTF the base colour tints the light passing through, so use Grip's transmission colour for it
+        tc = nodes.get("transmission_color")
+        tc_fb = _val(tc.GetPrim().GetAttribute("inputs:fallback")) if tc else None
+        tc_img = (_load_image(_asset_path(tc.GetPrim().GetAttribute("inputs:file")), warnings, True) if tc else None)
+        if tc_img is not None:
+            info["image"] = tc_img
+            info["base"][:3] = [1.0, 1.0, 1.0]
+        elif tc_fb is not None:
+            info["base"][:3] = _rgb(tc_fb)
+        else:
+            info["base"][:3] = [1.0, 1.0, 1.0]
+        ior = nodes.get("IOR")
+        ior_fb = _val(ior.GetPrim().GetAttribute("inputs:fallback")) if ior else None
+        info["ior"] = min(max(float(ior_fb[0]), 1.0), 2.4) if ior_fb is not None else 1.45
     cache[key] = info
     return info
 
@@ -527,9 +552,10 @@ def encode_environment(path: str, w: int = 1024, h: int = 512) -> bytes | None:
 
 
 # --------------------------------------------------------------------------- glTF post-processing
-def patch_glb_glass(glb: bytes, glass_nodes: set[str], ior: float = 1.4) -> bytes:
-    """Mark materials of the named nodes as transmissive glass (KHR_materials_transmission / ior)."""
-    if not glass_nodes:
+def patch_glb_glass(glb: bytes, glass: dict[str, tuple[float, float]]) -> bytes:
+    """Mark materials of the named nodes as transmissive (KHR_materials_transmission / ior).
+    `glass` maps node name -> (transmission factor, index of refraction)."""
+    if not glass:
         return glb
     off, chunks = 12, []
     while off < len(glb):
@@ -538,16 +564,16 @@ def patch_glb_glass(glb: bytes, glass_nodes: set[str], ior: float = 1.4) -> byte
         off += 8 + clen
     doc = json.loads(chunks[0][1].decode("utf-8").rstrip(" \x00"))
     mats = doc.get("materials", [])
-    hit = set()
+    hit: dict[int, tuple[float, float]] = {}
     for node in doc.get("nodes", []):
-        if node.get("name") in glass_nodes and "mesh" in node:
+        if node.get("name") in glass and "mesh" in node:
             for prim in doc["meshes"][node["mesh"]].get("primitives", []):
                 if "material" in prim:
-                    hit.add(prim["material"])
-    for i in hit:
+                    hit[prim["material"]] = glass[node["name"]]
+    for i, (tr, ior) in hit.items():
         ext = mats[i].setdefault("extensions", {})
-        ext["KHR_materials_transmission"] = {"transmissionFactor": 1.0}
-        ext["KHR_materials_ior"] = {"ior": ior}
+        ext["KHR_materials_transmission"] = {"transmissionFactor": float(tr)}
+        ext["KHR_materials_ior"] = {"ior": float(ior)}
         mats[i].setdefault("pbrMetallicRoughness", {})["metallicFactor"] = 0.0
     if hit:
         used = doc.setdefault("extensionsUsed", [])
@@ -581,7 +607,8 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
     scene = trimesh.Scene()
     n_meshes = n_tris = 0
     diag: list = []
-    glass_nodes: set[str] = set()
+    glass_nodes: dict[str, tuple[float, float]] = {}
+    t0 = time.perf_counter()
     seen_names: dict[str, int] = {}
     pred = Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)
     for prim in stage.Traverse(pred):
@@ -616,8 +643,8 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
             name = f"{name}_{seen_names[name]}"
         scene.add_geometry(tm, node_name=name, geom_name=name)
         if material.get("glass"):
-            glass_nodes.add(name)
-        diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")),
+            glass_nodes[name] = (material.get("transmission", 1.0), material.get("ior", 1.45))
+        diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")), "glass": bool(material.get("glass")),
                      "uv": material.get("uv"), "alpha": bool(material.get("alpha"))})
         n_meshes += 1; n_tris += len(tm.faces)
 
@@ -625,7 +652,10 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
         raise ValueError(
             f"OpenUSD composed '{root.name}' but found no visible meshes. "
             "Check that the referenced/payload files (e.g. resources/layers/geometry.usdc) were included.")
+    t1 = time.perf_counter()
     glb = patch_glb_glass(scene.export(file_type="glb"), glass_nodes)
+    print(f"[convert] {root.name}: {n_meshes} meshes, {n_tris} tris, meshes+materials {t1 - t0:.1f}s, "
+          f"export {time.perf_counter() - t1:.1f}s, glb {len(glb) / 1e6:.1f} MB", flush=True)
     env_info = None
     env_path = find_environment(stage)
     if env_path:
