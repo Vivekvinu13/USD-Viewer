@@ -191,7 +191,7 @@ async function serverAvailable() {
   catch { apiOk = false; }
   return apiOk;
 }
-async function convertOnServer(files, variants = {}, project = '') {
+async function convertOnServer(files, variants = {}, project = '', signal) {
   const fd = new FormData();
   if (Object.keys(variants).length) fd.append('variants', JSON.stringify(variants));
   if (project) fd.append('project', project);               // files already on the server: no re-upload
@@ -199,7 +199,7 @@ async function convertOnServer(files, variants = {}, project = '') {
     if (!/\.(usd|usda|usdc|usdz|png|jpe?g|webp|bmp|tga|exr)$/i.test(f.name)) continue;
     fd.append('files', f, relPath(f)); fd.append('paths', relPath(f));
   }
-  const r = await fetch('api/convert', { method: 'POST', body: fd });
+  const r = await fetch('api/convert', { method: 'POST', body: fd, signal });
   if (!r.ok) {
     let msg = r.statusText;
     try { msg = (await r.json()).detail || msg; } catch { /* not json */ }
@@ -295,10 +295,13 @@ function disposeCurrent() {
 }
 
 async function openFiles(fileList) {
+  // copy NOW: a file input's FileList is live and is emptied by the caller right after this starts,
+  // so anything iterated after an `await` would silently lose files
+  const dropped = [...fileList];
   setLoading(true); showError(null);
   // a zip with a missing/odd extension is still a zip: recognise it by content
   let incoming = [];
-  for (const f of fileList) {
+  for (const f of dropped) {
     const e = extOf(f.name);
     const known = MODEL_EXT.includes(e) || e === 'zip' || ['pdf', 'exr', 'hdr', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(e);
     incoming.push(!known && (await sniffExt(f)) === 'zip' ? new File([f], f.name + '.zip') : f);
@@ -317,18 +320,20 @@ async function openFiles(fileList) {
   const imgs = files.filter((f) => f.kind === 'image' || f.kind === 'hdr');
   if (imgs.length) { session = { files, model: imgs[0], images: imgs, variants: {}, mode: 'images' }; return loadSession(false); }
   setLoading(false);
-  const f = [...fileList][0] ?? files[0];
+  const f = dropped[0] ?? files[0];
   const kb = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
   showError(`Can't preview "${f.name}" (${kb}).\nIt isn't a 3D model, image or PDF that I can recognise, even by its contents.\n` +
     'Documents such as Word or Excel have no 3D form; export them to PDF to view them here.');
 }
 
+let loadAbort = null;
 let session = null;        // the files currently shown, so a configuration change can re-convert them
 let sessionToken = 0;
 
 async function loadSession(keepView) {
   const { files, model, variants } = session;
   const token = ++sessionToken;
+  loadAbort?.abort(); loadAbort = new AbortController();     // a newer load cancels the one still waiting on the server
   setLoading(true); showError(null);
   const savedView = keepView ? { p: camera.position.clone(), t: controls.target.clone(), fov: camera.fov, near: camera.near, far: camera.far } : null;
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
@@ -344,8 +349,8 @@ async function loadSession(keepView) {
     else if (isUsdLayer(model) || (model.kext || extOf(model.name)) === 'usdz') {
       if (await serverAvailable()) {
         let res;
-        try { res = await convertOnServer(files, variants, keepView ? session.project : ''); }
-        catch (e) { if (e.status === 410) res = await convertOnServer(files, variants); else throw e; }   // expired: re-send
+        try { res = await convertOnServer(files, variants, keepView ? session.project : '', loadAbort.signal); }
+        catch (e) { if (e.status === 410) res = await convertOnServer(files, variants, '', loadAbort.signal); else throw e; }   // expired: re-send
         const { blob, info } = res;                                           // real OpenUSD
         session.project = info.project || '';
         const url = URL.createObjectURL(blob); blobUrls.push(url);
@@ -371,8 +376,9 @@ async function loadSession(keepView) {
     $('panel').hidden = false;
     if (ptOn) applyPTScene();
   } catch (e) {
+    if (e?.name === 'AbortError') return;                    // superseded by a newer load
     console.error(e);
-    showError(`Could not open "${model.name}".\n${e?.message || e}`);
+    showError(`Could not open "${model.name}".\n${e?.message || e || 'unknown error'}\n(Use "Copy diagnostics" and send it if this keeps happening.)`);
   } finally { if (token === sessionToken) setLoading(false); }
 }
 
@@ -439,13 +445,19 @@ function prepare(root, file) {
     if (!o.isMesh) return;
     for (const m of [].concat(o.material)) if (m.transmission > 0) {
       m.roughness = Math.min(m.roughness ?? 0.05, 0.05);
-      trans.push({ m, box: new THREE.Box3().setFromObject(o) });
+      trans.push({ m, name: o.name || '', box: new THREE.Box3().setFromObject(o) });
     }
   });
   // The normal renderer cannot see one transparent object through another (e.g. liquid inside a glass bottle),
   // so an inner transmissive object is shown as a tinted solid. The path tracer restores true transmission.
-  for (const a of trans) for (const b of trans) {
-    if (a !== b && b.box.containsBox(a.box) && !a.box.containsBox(b.box) && a.m.userData.nested === undefined) {
+  const vol = (bx) => { const sz = bx.getSize(new THREE.Vector3()); return Math.max(sz.x * sz.y * sz.z, 1e-18); };
+  const looksLikeLiquid = (n) => /liquid|cola|drink|juice|beer|wine|milk|water|fluid|soda/i.test(n);
+  for (const a of trans) {
+    if (a.m.userData.nested !== undefined) continue;
+    // inner = mostly inside another transmissive object (by volume overlap), or named like a liquid next to one
+    const inner = trans.some((b) => b !== a && vol(b.box) > vol(a.box) * 1.02 &&
+        vol(a.box.clone().intersect(b.box)) / vol(a.box) > 0.7) || (looksLikeLiquid(a.name) && trans.length > 1);
+    if (inner) {
       a.m.userData.nested = a.m.transmission;
       if (!ptOn) { a.m.transmission = 0; a.m.needsUpdate = true; }
     }
@@ -547,7 +559,12 @@ function applyTint() {
     for (const m of [].concat(o.material)) {
       if (m.userData.nested !== undefined) {          // inner liquid: tinted solid in the normal view, true volume in path tracing
         if (ptOn) m.color.setRGB(1, 1, 1);
-        else m.color.setRGB(...mi.tint_lin.map((c) => Math.pow(Math.max(c, 1e-4), k)));
+        else {
+          let rgb = mi.tint_lin.map((c) => Math.pow(Math.max(c, 1e-4), k));
+          const lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+          if (lum < 0.06) rgb = rgb.map((c) => Math.min(1, (c * 0.06) / Math.max(lum, 1e-6)));   // never pitch black: keep the hue
+          m.color.setRGB(...rgb);
+        }
       } else m.thickness = k;
     }
   });
@@ -645,3 +662,22 @@ async function collectDropped(dt) {
 
 // expose for testing
 window.__viewer = { openFiles, scene, camera };
+
+// ---------- diagnostics: one click copies everything needed to debug a model that looks wrong
+$('diagBtn').onclick = async () => {
+  const lines = [
+    `viewer: ${location.href}`, `file: ${session?.model?.name || '-'}  mode: ${session?.mode || '-'}`,
+    `notes: ${(current?.userData.notes || []).join(' | ')}`,
+    `variants: ${JSON.stringify(session?.variants || {})}`, `meshes:`,
+    ...(current?.userData.meshInfo || []).map((m) => '  ' + JSON.stringify(m)),
+  ];
+  current?.traverse((o) => {
+    if (o.isMesh) for (const m of [].concat(o.material)) {
+      lines.push(`  three ${o.name}: ${m.type} transmission=${m.transmission ?? '-'} nested=${m.userData.nested ?? '-'} thickness=${m.thickness ?? '-'} color=${m.color?.getHexString?.()}`);
+    }
+  });
+  const text = lines.join('\n');
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
+  $('diagBtn').textContent = 'Copied!'; setTimeout(() => { $('diagBtn').textContent = 'Copy diagnostics'; }, 1800);
+};

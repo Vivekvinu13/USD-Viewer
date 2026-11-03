@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
 import shutil
 import tempfile
@@ -14,7 +16,8 @@ import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
@@ -24,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MAX_BYTES = 2 * 1024**3
 app = FastAPI(title="3D Viewer API")
 
+CONVERT_SLOT = asyncio.Semaphore(1)      # one conversion at a time: big projects use lots of memory
 PROJECTS: dict[str, dict] = {}        # id -> {"dir": Path, "t": last use}; lets a state switch skip the re-upload
 PROJECT_TTL = 3600
 MAX_PROJECTS = 3
@@ -54,7 +58,7 @@ def health():
 
 
 @app.post("/api/convert")
-async def convert_usd(files: list[UploadFile] = File(default=[]), paths: list[str] = Form(default=[]),
+async def convert_usd(request: Request, files: list[UploadFile] = File(default=[]), paths: list[str] = Form(default=[]),
                       variants: str = Form(default=""), project: str = Form(default="")):
     _evict()
     reuse = PROJECTS.get(project) if project else None
@@ -81,20 +85,29 @@ async def convert_usd(files: list[UploadFile] = File(default=[]), paths: list[st
                     z.extractall(work)
                 dest.unlink()
         try:
-            root = pick_root(work)
+            sel = json.loads(variants) if variants else {}
+        except ValueError:
+            sel = {}
+        sel = {str(k): str(v) for k, v in sel.items()} if isinstance(sel, dict) else {}
+        pid = project or uuid.uuid4().hex
+        PROJECTS[pid] = {"dir": work, "t": time.time()}        # kept so a retry or state switch need not re-upload
+        ok = True
+        async with CONVERT_SLOT:                                # queue behind any running conversion
+            if await request.is_disconnected():                 # the user already gave up on this request
+                raise HTTPException(499, "client closed the request")
             try:
-                sel = json.loads(variants) if variants else {}
-            except ValueError:
-                sel = {}
-            glb, info = convert(root, {str(k): str(v) for k, v in sel.items()} if isinstance(sel, dict) else {})
-            pid = project or uuid.uuid4().hex
-            PROJECTS[pid] = {"dir": work, "t": time.time()}
-            info["project"] = pid
-            ok = True
-        except HTTPException:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(422, str(e)) from e
+                root = await run_in_threadpool(pick_root, work)
+                glb, info = await run_in_threadpool(convert, root, sel)
+            except HTTPException:
+                raise
+            except MemoryError as e:
+                raise HTTPException(507, "The server ran out of memory converting this project. Close other programs "
+                                         "or use a machine with more RAM.") from e
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(422, f"{type(e).__name__}: {e}" if str(e) else type(e).__name__) from e
+            finally:
+                gc.collect()
+        info["project"] = pid
         return Response(glb, media_type="model/gltf-binary", headers={"X-Convert-Info": json.dumps(info)})
     finally:
         if not ok and not reuse:

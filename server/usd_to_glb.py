@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "7-volume-absorption"
+VERSION = "8-fast-weld"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
@@ -30,25 +30,39 @@ except Exception:  # noqa: BLE001  (optional dependency)
     OpenEXR = None
 
 
-def _read_exr(path: str) -> np.ndarray:
-    """Read an OpenEXR file as float32 HxWxC (C = 1, 3 or 4)."""
+def _reduce_chunked(a: np.ndarray, limit: int) -> np.ndarray:
+    """float16/32 HxWxC -> float32, average-pooled so the longest side <= limit, converting a few rows at a time."""
+    h, w, c = a.shape
+    f = -(-max(h, w) // limit)
+    if f <= 1:
+        return a.astype(np.float32)
+    h2, w2 = h // f * f, w // f * f
+    out = np.empty((h2 // f, w2 // f, c), np.float32)
+    step = 32
+    for r0 in range(0, h2 // f, step):
+        r1 = min(r0 + step, h2 // f)
+        blk = a[r0 * f:r1 * f, :w2].astype(np.float32)
+        out[r0:r1] = blk.reshape(r1 - r0, f, w2 // f, f, c).mean(axis=(1, 3))
+    return out
+
+
+def _read_exr(path: str, limit: int = 4096) -> np.ndarray:
+    """Read an OpenEXR file as float32 HxWxC (C = 1, 3 or 4), downsampled while decoding to keep memory low."""
     if OpenEXR is None:
         raise RuntimeError("OpenEXR is not installed (pip install OpenEXR)")
     with OpenEXR.File(path) as f:
         ch = f.channels()
         for key in ("RGBA", "RGB"):
             if key in ch:
-                return np.asarray(ch[key].pixels, dtype=np.float32)
+                return _reduce_chunked(np.asarray(ch[key].pixels), limit)
         names = [n for n in ("R", "G", "B", "A") if n in ch]
         if names:
-            planes = [np.asarray(ch[n].pixels, dtype=np.float32) for n in names]
-            return np.stack(planes, axis=-1)
+            return np.concatenate([_reduce_chunked(np.asarray(ch[n].pixels)[..., None], limit) for n in names], axis=-1)
         for n in ("Y", "V", "L"):
             if n in ch:
-                return np.asarray(ch[n].pixels, dtype=np.float32)[..., None]
-        first = next(iter(ch.values()))
-        arr = np.asarray(first.pixels, dtype=np.float32)
-        return arr if arr.ndim == 3 else arr[..., None]
+                return _reduce_chunked(np.asarray(ch[n].pixels)[..., None], limit)
+        arr = np.asarray(next(iter(ch.values())).pixels)
+        return _reduce_chunked(arr if arr.ndim == 3 else arr[..., None], limit)
 
 
 def _srgb_encode(x: np.ndarray) -> np.ndarray:
@@ -67,7 +81,7 @@ def _box_reduce(a: np.ndarray, limit: int) -> np.ndarray:
 
 
 def _exr_to_image(path: str, color: bool) -> Image.Image:
-    a = _box_reduce(_read_exr(path), MAX_TEX)
+    a = _read_exr(path, MAX_TEX)
     if a.shape[-1] == 1:
         a = np.repeat(a, 3, axis=-1)
     elif a.shape[-1] == 2:
@@ -378,6 +392,16 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
     return info
 
 
+def _jpeg(img: Image.Image, quality: int = 90) -> Image.Image:
+    """Re-encode as JPEG so the GLB stores it as JPEG (trimesh keeps JPEGs as they are)."""
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=quality)
+    buf.seek(0)
+    out = Image.open(buf)
+    out.load()
+    return out
+
+
 def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
     kw = dict(name=info["name"], metallicFactor=min(max(info["metal"], 0), 1),
               roughnessFactor=min(max(info["rough"], 0), 1), doubleSided=True)
@@ -393,14 +417,16 @@ def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
         base = [1, 1, 1, 1]
     if color_img is not None:
         rgba = color_img.convert("RGBA")
-        kw["baseColorTexture"] = rgba
         base = [1, 1, 1, base[3]]
         if rgba.getchannel("A").getextrema()[0] < 255:      # texture has transparent areas: honour them
             kw["alphaMode"] = "BLEND"
+            kw["baseColorTexture"] = rgba
+        else:
+            kw["baseColorTexture"] = _jpeg(rgba, 90)
     if info.get("normal") is not None:
-        kw["normalTexture"] = info["normal"].convert("RGB")
+        kw["normalTexture"] = _jpeg(info["normal"], 92)
     if info.get("mr") is not None:
-        kw["metallicRoughnessTexture"] = info["mr"]
+        kw["metallicRoughnessTexture"] = _jpeg(info["mr"], 92)
     kw["baseColorFactor"] = [int(round(c * 255)) for c in base]
     if info["alpha"]:
         kw["alphaMode"] = "BLEND"
@@ -418,80 +444,132 @@ def _uv_primvar(mesh: UsdGeom.Mesh, preferred: str | None = None):
     return None
 
 
+def _vertex_normals(points: np.ndarray, tris: np.ndarray) -> np.ndarray:
+    """Area-weighted smooth vertex normals (much faster than trimesh's for multi-million triangle meshes)."""
+    p0, p1, p2 = points[tris[:, 0]], points[tris[:, 1]], points[tris[:, 2]]
+    fn = np.cross(p1 - p0, p2 - p0)
+    out = np.zeros_like(points)
+    for k in range(3):
+        for c in range(3):
+            out[:, c] += np.bincount(tris[:, k], weights=fn[:, c], minlength=len(points))
+    return out
+
+
+def _pack_unique(keys: np.ndarray) -> np.ndarray:
+    """Dense ids (0..n-1) for equal int64 keys."""
+    return np.unique(keys, return_inverse=True)[1].astype(np.int64).reshape(-1)
+
+
 def mesh_to_trimesh(prim, xf_cache, to_unit: Gf.Matrix4d, material: dict | None):
     mesh = UsdGeom.Mesh(prim)
     pts = mesh.GetPointsAttr().Get()
     fvc = mesh.GetFaceVertexCountsAttr().Get()
     fvi = mesh.GetFaceVertexIndicesAttr().Get()
-    if pts is None or not fvc or fvi is None:
+    if pts is None or fvc is None or fvi is None or not len(fvc):
         return None
     pts = np.asarray(pts, dtype=np.float64)
-    fvc = np.asarray(fvc); fvi = np.asarray(fvi)
-
-    # fan-triangulate, remembering the face-vertex ("corner") index of each triangle corner
-    tri, corner = [], []
-    off = 0
-    for n in fvc:
-        n = int(n)
-        for k in range(1, n - 1):
-            tri.append((fvi[off], fvi[off + k], fvi[off + k + 1]))
-            corner.append((off, off + k, off + k + 1))
-        off += n
-    if not tri:
+    fvc = np.asarray(fvc, dtype=np.int64); fvi = np.asarray(fvi, dtype=np.int64)
+    if fvc.sum() > len(fvi):
         return None
-    tri = np.asarray(tri); corner = np.asarray(corner)
-    if mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded:
-        tri = tri[:, ::-1]; corner = corner[:, ::-1]
 
-    # world transform (row-vector convention)
+    # --- vectorised fan triangulation: `corner` = face-vertex index of each triangle corner
+    if (fvc == 3).all():
+        corner = np.arange(len(fvi), dtype=np.int64).reshape(-1, 3)
+    else:
+        cnt = np.maximum(fvc - 2, 0)
+        total = int(cnt.sum())
+        if total == 0:
+            return None
+        starts = np.cumsum(fvc) - fvc
+        face = np.repeat(np.arange(len(fvc)), cnt)
+        k = np.arange(total) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        a0 = starts[face]
+        corner = np.stack([a0, a0 + k + 1, a0 + k + 2], axis=1)
+    flip = mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded
+
+    # --- world transform (row-vector convention)
     M = np.array(xf_cache.GetLocalToWorldTransform(prim) * to_unit).reshape(4, 4)
     wp = (np.c_[pts, np.ones(len(pts))] @ M)[:, :3]
     nm = np.linalg.inv(M[:3, :3]).T
     if np.linalg.det(M[:3, :3]) < 0:
-        tri = tri[:, ::-1]; corner = corner[:, ::-1]
+        flip = not flip
+    if flip:
+        corner = corner[:, ::-1]
+    cflat = np.ascontiguousarray(corner.reshape(-1))
+    pidx = fvi[cflat]
 
-    tm = trimesh.Trimesh(vertices=wp, faces=tri, process=False)
-    flat_v = tri.reshape(-1)
-    verts = wp[flat_v]
-    normals = tm.vertex_normals[flat_v]
-
+    # --- authored normals and UVs -> keys that decide which corners may share a vertex
+    n_vals = n_mode = None
     n_attr = mesh.GetNormalsAttr().Get()
     if n_attr is not None and len(n_attr):
-        n_arr = np.asarray(n_attr, dtype=np.float64)
+        arr = np.asarray(n_attr, dtype=np.float64)
         interp = mesh.GetNormalsInterpolation()
-        try:
-            if interp == UsdGeom.Tokens.faceVarying and len(n_arr) == len(fvi):
-                normals = n_arr[corner.reshape(-1)] @ nm
-            elif interp == UsdGeom.Tokens.vertex and len(n_arr) == len(pts):
-                normals = n_arr[flat_v] @ nm
-        except Exception:
-            pass
-        ln = np.linalg.norm(normals, axis=1, keepdims=True); ln[ln == 0] = 1
-        normals = normals / ln
+        if interp == UsdGeom.Tokens.faceVarying and len(arr) == len(fvi):
+            n_vals, n_mode = arr, "corner"
+        elif interp == UsdGeom.Tokens.vertex and len(arr) == len(pts):
+            n_vals, n_mode = arr, "vertex"
 
-    uv = None
     uvx = (material or {}).get("uv") or {}
     pv = _uv_primvar(mesh, uvx.get("varname"))
+    uv_vals = uv_mode = uv_corner_key = None
     if pv is not None:
         vals = np.asarray(pv.Get(), dtype=np.float64)
         idx = pv.GetIndices()
-        if idx is not None and len(idx):
-            vals = vals[np.asarray(idx)]
         interp = pv.GetInterpolation()
-        try:
-            if interp == UsdGeom.Tokens.faceVarying and len(vals) == len(fvi):
-                uv = vals[corner.reshape(-1)]
-            elif interp == UsdGeom.Tokens.vertex and len(vals) == len(pts):
-                uv = vals[flat_v]
-        except Exception:
-            uv = None
+        if interp == UsdGeom.Tokens.faceVarying:
+            if idx is not None and len(idx) == len(fvi):
+                uv_vals, uv_mode, uv_corner_key = vals, "corner_idx", np.asarray(idx, dtype=np.int64)
+            elif len(vals) == len(fvi):
+                uv_vals, uv_mode = vals, "corner"
+                uv_corner_key = np.ascontiguousarray(vals.astype(np.float32)).view(np.int64).reshape(-1)
+        elif interp == UsdGeom.Tokens.vertex:
+            if idx is not None and len(idx):
+                vals = vals[np.asarray(idx, dtype=np.int64)]
+            if len(vals) == len(pts):
+                uv_vals, uv_mode = vals, "vertex"
+
+    # --- weld: corners with the same position, normal and UV become one vertex
+    extra = np.zeros(len(cflat), dtype=np.int64)
+    if n_mode == "corner":
+        q = np.clip(np.round(n_vals * 4096).astype(np.int64) + 4096, 0, 16383)
+        packed = (q[:, 0] << 28) | (q[:, 1] << 14) | q[:, 2]
+        extra = _pack_unique(packed)[cflat]
+    if uv_mode in ("corner", "corner_idx"):
+        ukey = _pack_unique(uv_corner_key)[cflat]
+        extra = ukey if n_mode != "corner" else _pack_unique(extra * (int(ukey.max()) + 1) + ukey)
+    if n_mode == "corner" or uv_mode in ("corner", "corner_idx"):
+        final = pidx * (int(extra.max()) + 1) + extra
+    else:
+        final = pidx
+    _, first, inv = np.unique(final, return_index=True, return_inverse=True)
+    faces = inv.reshape(-1, 3)
+    src_c, src_p = cflat[first], pidx[first]
+    verts = wp[src_p]
+
+    # --- per-vertex normals
+    if n_mode == "corner":
+        normals = n_vals[src_c] @ nm
+    elif n_mode == "vertex":
+        normals = n_vals[src_p] @ nm
+    else:
+        # smooth normals computed on the original points, so shading stays continuous across UV seams
+        normals = _vertex_normals(wp, pidx.reshape(-1, 3))[src_p]
+    ln = np.linalg.norm(normals, axis=1, keepdims=True); ln[ln == 0] = 1
+    normals = normals / ln
+
+    # --- per-vertex UVs
+    uv = None
+    if uv_mode in ("corner", "corner_idx"):
+        full = uv_vals[uv_corner_key] if uv_mode == "corner_idx" else uv_vals
+        uv = full[src_c]
+    elif uv_mode == "vertex":
+        uv = uv_vals[src_p]
     if uv is not None and ("scale" in uvx):           # UsdTransform2d: scale, then rotate, then translate
         sx, sy = uvx["scale"]; t = math.radians(uvx.get("rot", 0.0)); tx, ty = uvx.get("trans", (0.0, 0.0))
         u, v = uv[:, 0] * sx, uv[:, 1] * sy
         uv = np.stack([u * math.cos(t) - v * math.sin(t) + tx, u * math.sin(t) + v * math.cos(t) + ty], axis=1)
 
-    out = trimesh.Trimesh(vertices=verts, faces=np.arange(len(verts)).reshape(-1, 3),
-                          vertex_normals=normals, process=False)
+    out = trimesh.Trimesh(vertices=verts, faces=faces, vertex_normals=normals, process=False)
     if material is not None:
         mat = to_pbr(material)
         if uv is not None:
@@ -548,7 +626,7 @@ def encode_environment(path: str, w: int = 1024, h: int = 512) -> bytes | None:
     """Dome-light image -> little-endian float16 RGBA (w*h*4), ready for a browser DataTexture."""
     try:
         if Path(path).suffix.lower() == ".exr":
-            a = _read_exr(path)
+            a = _read_exr(path, 2048)
         else:
             a = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
             a = _srgb_decode(a)

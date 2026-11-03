@@ -82,3 +82,10 @@ Grip's `transmission_color` is an *absorption* colour (the colour reached after 
 material), so values like (0.01, 0.07, 0.015) are expected for thin green glass. The converter turns it into glTF
 `KHR_materials_volume` (transmittance = tint ^ k). `k` is chosen so glass stays light and liquids stay deeper; the
 **Glass/liquid tint** slider scales it.
+
+## Performance notes
+Meshes are triangulated and welded with vectorised NumPy (a 3M-triangle bottle converts in ~7 s and ~1.5 GB, with a GLB
+~4x smaller than before); EXR textures are decoded and downsampled a few rows at a time; opaque textures are stored as
+JPEG; only one conversion runs at a time (others wait in a queue), off the web server's main thread; a request the
+browser has abandoned is skipped. If a conversion runs out of memory the server now says so instead of an empty error.
+**Copy diagnostics** (side panel) copies the per-material details to send when a model looks wrong.
