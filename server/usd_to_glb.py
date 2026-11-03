@@ -12,9 +12,13 @@ from pathlib import Path
 import numpy as np
 import trimesh
 from PIL import Image
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
+import json
+import struct
+import uuid
 
-VERSION = "3-artwork-atlas"
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
+
+VERSION = "4-variants-env-glass"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 4096
@@ -327,6 +331,13 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
                     info["base"] = [1.0, 1.0, 1.0, 1.0]
                     info["opacity"] = None
                     break
+    tr = nodes.get("transmission")
+    trv = _val(tr.GetPrim().GetAttribute("inputs:fallback")) if tr else None
+    if trv is not None and float(trv[0]) >= 0.5:         # water droplets, glass: transmissive material
+        info["glass"] = True
+        info["base"][:3] = [1.0, 1.0, 1.0]
+        info["metal"] = 0.0
+        info["rough"] = min(info["rough"], 0.08)
     cache[key] = info
     return info
 
@@ -454,10 +465,110 @@ def mesh_to_trimesh(prim, xf_cache, to_unit: Gf.Matrix4d, material: dict | None)
     return out
 
 
-def convert(root: Path) -> tuple[bytes, dict]:
+# --------------------------------------------------------------------------- variants
+USER_VARIANT_SETS = ("Visibility", "Artwork")      # the ones worth exposing to a viewer user
+
+
+def list_variants(stage) -> list[dict]:
+    """Variant sets users may switch (e.g. Grip's Visibility = Dry/Wet/Open_Dry/Open_Wet, Artwork)."""
+    out, seen = [], set()
+    for prim in stage.Traverse():
+        vsets = prim.GetVariantSets()
+        for name in vsets.GetNames():
+            if name in USER_VARIANT_SETS and name not in seen:
+                vs = vsets.GetVariantSet(name)
+                out.append({"set": name, "options": vs.GetVariantNames(), "selected": vs.GetVariantSelection()})
+                seen.add(name)
+    return out
+
+
+def apply_variants(stage, selection: dict[str, str]) -> None:
+    if not selection:
+        return
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for prim in stage.Traverse():
+            vsets = prim.GetVariantSets()
+            for name in vsets.GetNames():
+                want = selection.get(name)
+                if want and want in vsets.GetVariantSet(name).GetVariantNames():
+                    vsets.GetVariantSet(name).SetVariantSelection(want)
+
+
+# --------------------------------------------------------------------------- lighting environment
+ENV_CACHE: dict[str, bytes] = {}
+
+
+def find_environment(stage) -> str | None:
+    for prim in stage.Traverse():
+        if prim.IsA(UsdLux.DomeLight):
+            a = prim.GetAttribute("inputs:texture:file")
+            path = _asset_path(a) if a else None
+            if path:
+                return path
+    return None
+
+
+def encode_environment(path: str, w: int = 1024, h: int = 512) -> bytes | None:
+    """Dome-light image -> little-endian float16 RGBA (w*h*4), ready for a browser DataTexture."""
+    try:
+        if Path(path).suffix.lower() == ".exr":
+            a = _read_exr(path)
+        else:
+            a = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
+            a = _srgb_decode(a)
+        a = np.nan_to_num(a[..., :3] if a.shape[-1] >= 3 else np.repeat(a[..., :1], 3, axis=-1), nan=0.0, posinf=60000.0)
+        chans = [np.asarray(Image.fromarray(np.ascontiguousarray(a[..., c]), mode="F").resize((w, h), Image.BOX))
+                 for c in range(3)]
+        rgb = np.clip(np.stack(chans, axis=-1), 0.0, 60000.0)
+        rgba = np.concatenate([rgb, np.ones((h, w, 1), dtype=np.float32)], axis=-1).astype("<f2")
+        return rgba.tobytes()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# --------------------------------------------------------------------------- glTF post-processing
+def patch_glb_glass(glb: bytes, glass_nodes: set[str], ior: float = 1.4) -> bytes:
+    """Mark materials of the named nodes as transmissive glass (KHR_materials_transmission / ior)."""
+    if not glass_nodes:
+        return glb
+    off, chunks = 12, []
+    while off < len(glb):
+        clen, ctype = struct.unpack_from("<II", glb, off)
+        chunks.append([ctype, glb[off + 8: off + 8 + clen]])
+        off += 8 + clen
+    doc = json.loads(chunks[0][1].decode("utf-8").rstrip(" \x00"))
+    mats = doc.get("materials", [])
+    hit = set()
+    for node in doc.get("nodes", []):
+        if node.get("name") in glass_nodes and "mesh" in node:
+            for prim in doc["meshes"][node["mesh"]].get("primitives", []):
+                if "material" in prim:
+                    hit.add(prim["material"])
+    for i in hit:
+        ext = mats[i].setdefault("extensions", {})
+        ext["KHR_materials_transmission"] = {"transmissionFactor": 1.0}
+        ext["KHR_materials_ior"] = {"ior": ior}
+        mats[i].setdefault("pbrMetallicRoughness", {})["metallicFactor"] = 0.0
+    if hit:
+        used = doc.setdefault("extensionsUsed", [])
+        for e in ("KHR_materials_transmission", "KHR_materials_ior"):
+            if e not in used:
+                used.append(e)
+    raw = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    raw += b" " * (-len(raw) % 4)
+    chunks[0][1] = raw
+    body = b"".join(struct.pack("<II", len(d), t) + d for t, d in chunks)
+    return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body
+
+
+def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
     stage = Usd.Stage.Open(str(root))
     if not stage:
         raise ValueError(f"OpenUSD could not open {root.name}")
+    available_variants = list_variants(stage)
+    apply_variants(stage, variants or {})
+    for v in available_variants:                       # report what is selected now
+        v["selected"] = (variants or {}).get(v["set"], v["selected"])
     warnings: list[str] = []
     mpu = UsdGeom.GetStageMetersPerUnit(stage) or 1.0
     up = UsdGeom.GetStageUpAxis(stage)
@@ -470,6 +581,7 @@ def convert(root: Path) -> tuple[bytes, dict]:
     scene = trimesh.Scene()
     n_meshes = n_tris = 0
     diag: list = []
+    glass_nodes: set[str] = set()
     seen_names: dict[str, int] = {}
     pred = Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate)
     for prim in stage.Traverse(pred):
@@ -503,6 +615,8 @@ def convert(root: Path) -> tuple[bytes, dict]:
         if seen_names[name] > 1:
             name = f"{name}_{seen_names[name]}"
         scene.add_geometry(tm, node_name=name, geom_name=name)
+        if material.get("glass"):
+            glass_nodes.add(name)
         diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")),
                      "uv": material.get("uv"), "alpha": bool(material.get("alpha"))})
         n_meshes += 1; n_tris += len(tm.faces)
@@ -511,7 +625,17 @@ def convert(root: Path) -> tuple[bytes, dict]:
         raise ValueError(
             f"OpenUSD composed '{root.name}' but found no visible meshes. "
             "Check that the referenced/payload files (e.g. resources/layers/geometry.usdc) were included.")
-    glb = scene.export(file_type="glb")
+    glb = patch_glb_glass(scene.export(file_type="glb"), glass_nodes)
+    env_info = None
+    env_path = find_environment(stage)
+    if env_path:
+        data = encode_environment(env_path)
+        if data:
+            eid = uuid.uuid4().hex
+            if len(ENV_CACHE) >= 6:
+                ENV_CACHE.pop(next(iter(ENV_CACHE)))
+            ENV_CACHE[eid] = data
+            env_info = {"id": eid, "w": 1024, "h": 512, "name": Path(env_path).name}
     unresolved = []
     try:
         _, _, unresolved = UsdUtils.ComputeAllDependencies(str(root))
@@ -520,4 +644,5 @@ def convert(root: Path) -> tuple[bytes, dict]:
     if unresolved:
         names = sorted({Path(u).name for u in unresolved})
         warnings.append(f"{len(names)} referenced file(s) not included in the upload (e.g. {names[0]})")
-    return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag, "version": VERSION}
+    return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag, "version": VERSION,
+                "variants": available_variants, "env": env_info}

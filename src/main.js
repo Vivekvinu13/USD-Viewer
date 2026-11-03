@@ -31,10 +31,11 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 const envs = {
+  bright: envFromScene(renderer, makeStudioScene({ bright: true })),
   studio: envFromScene(renderer, makeStudioScene()),
   room: envFromScene(renderer, new RoomEnvironment()),
 };
-scene.environment = envs.studio;
+scene.environment = envs.bright;
 scene.environmentIntensity = 1.0;
 const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
 camera.position.set(3, 2, 4);
@@ -178,8 +179,9 @@ async function serverAvailable() {
   catch { apiOk = false; }
   return apiOk;
 }
-async function convertOnServer(files) {
+async function convertOnServer(files, variants = {}) {
   const fd = new FormData();
+  if (Object.keys(variants).length) fd.append('variants', JSON.stringify(variants));
   for (const f of files) {
     if (!/\.(usd|usda|usdc|usdz|png|jpe?g|webp|bmp|tga|exr)$/i.test(f.name)) continue;
     fd.append('files', f, relPath(f)); fd.append('paths', relPath(f));
@@ -276,6 +278,18 @@ async function openFiles(fileList) {
   const usdz = files.find((f) => extOf(f.name) === 'usdz');
   const model = usdz ?? (usd.length ? await pickUsdRoot(usd) : files.find((f) => MODEL_EXT.includes(extOf(f.name))));
   if (!model) { setLoading(false); return showError('No supported 3D file found.\nSupported: ' + MODEL_EXT.map((e) => '.' + e).join(' ') + ' (or a .zip of them)'); }
+  session = { files, model, variants: {} };
+  await loadSession(false);
+}
+
+let session = null;        // the files currently shown, so a configuration change can re-convert them
+let sessionToken = 0;
+
+async function loadSession(keepView) {
+  const { files, model, variants } = session;
+  const token = ++sessionToken;
+  setLoading(true); showError(null);
+  const savedView = keepView ? { p: camera.position.clone(), t: controls.target.clone(), fov: camera.fov, near: camera.near, far: camera.far } : null;
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   resources = new Map();
   for (const f of files) {
@@ -283,27 +297,72 @@ async function openFiles(fileList) {
     resources.set(f.name.toLowerCase(), u);
   }
   try {
-    let root, notes = [], meshInfo = [];
+    let root, notes = [], meshInfo = [], srvInfo = null;
     if (isUsdLayer(model.name) || extOf(model.name) === 'usdz') {
       if (await serverAvailable()) {
-        const { blob, info } = await convertOnServer(files);        // real OpenUSD
+        const { blob, info } = await convertOnServer(files, variants);        // real OpenUSD
         const url = URL.createObjectURL(blob); blobUrls.push(url);
         root = await parseModel({ name: 'converted.glb' }, url, makeManager());
         notes = [`Converted with OpenUSD (converter ${info.version || 'old'})`, ...(info.warnings || [])];
-        meshInfo = info.meshes || [];
+        meshInfo = info.meshes || []; srvInfo = info;
       }
     }
     if (!root) root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
+    if (token !== sessionToken) return;                       // a newer load started meanwhile
     root.userData.notes = notes; root.userData.meshInfo = meshInfo;
     disposeCurrent();
     current = root; pivot.add(root);
     prepare(root, model);
+    if (srvInfo) await setupFromServer(srvInfo, keepView);
+    if (savedView) {
+      camera.position.copy(savedView.p); controls.target.copy(savedView.t);
+      camera.fov = savedView.fov; camera.near = savedView.near; camera.far = savedView.far;
+      camera.updateProjectionMatrix(); controls.update();
+    }
     $('drop').classList.add('hidden');
     $('panel').hidden = false;
+    if (ptOn) applyPTScene();
   } catch (e) {
     console.error(e);
     showError(`Could not open "${model.name}".\n${e?.message || e}`);
-  } finally { setLoading(false); }
+  } finally { if (token === sessionToken) setLoading(false); }
+}
+
+// configuration menus, Grip lighting and droplet glass, driven by what the server reports
+const CONFIG_LABELS = { Dry: 'Dry', Wet: 'Wet (droplets)', Open_Dry: 'Open cap · dry', Open_Wet: 'Open cap · wet (droplets)' };
+const CONFIG_ORDER = ['Dry', 'Wet', 'Open_Dry', 'Open_Wet'];
+async function setupFromServer(info, keepView) {
+  const vis = (info.variants || []).find((v) => v.set === 'Visibility');
+  const art = (info.variants || []).find((v) => v.set === 'Artwork');
+  $('variantBox').hidden = !(vis || art);
+  if (vis) {
+    const opts = [...vis.options].sort((x, y) => (CONFIG_ORDER.indexOf(x) + 99) % 99 - (CONFIG_ORDER.indexOf(y) + 99) % 99);
+    $('optConfig').innerHTML = opts.map((o) => `<option value="${o}">${CONFIG_LABELS[o] || o}</option>`).join('');
+    $('optConfig').value = vis.selected;
+  }
+  $('optConfig').parentElement.hidden = !vis;
+  $('artVarLabel').hidden = !art;
+  if (art) {
+    $('optArtVar').innerHTML = art.options.map((o) => `<option value="${o}">${o[0].toUpperCase() + o.slice(1)}</option>`).join('');
+    $('optArtVar').value = art.selected;
+  }
+  if (info.env && !keepView) {
+    try {
+      const r = await fetch(`api/env/${info.env.id}`);
+      if (r.ok) {
+        const data = new Uint16Array(await r.arrayBuffer());
+        const t = new THREE.DataTexture(data, info.env.w, info.env.h, THREE.RGBAFormat, THREE.HalfFloatType,
+          THREE.EquirectangularReflectionMapping, THREE.RepeatWrapping, THREE.ClampToEdgeWrapping,
+          THREE.LinearFilter, THREE.LinearFilter);
+        t.needsUpdate = true; envs.grip = t;
+        if (!$('optEnv').querySelector('option[value=grip]')) {
+          const op = document.createElement('option'); op.value = 'grip'; op.textContent = 'Grip studio (from file)';
+          $('optEnv').prepend(op);
+        }
+        $('optEnv').value = 'grip'; applyEnv(); if (ptOn) pt.updateEnvironment();
+      }
+    } catch (e) { console.warn('environment not loaded', e); }
+  }
 }
 
 function prepare(root, file) {
@@ -321,6 +380,10 @@ function prepare(root, file) {
   });
   applyWire(); applyDouble();
   buildLayers(root);
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) if (m.transmission > 0) { m.thickness = 0.0006; m.roughness = Math.min(m.roughness ?? 0.05, 0.05); }
+  });
   if (root.userData.meshInfo?.length) console.table(root.userData.meshInfo);
   const anims = root.userData.animations || [];
   if (anims.length) {
@@ -350,6 +413,10 @@ function buildLayers(root) {
   list.innerHTML = '';
   const meshes = [];
   root.traverse((o) => { if (o.isMesh || o.isPoints) meshes.push(o); });
+  const isArt = (o) => /artwork/i.test(o.name || o.parent?.name || '');
+  const hasArt = meshes.some(isArt);
+  $('artLabel').hidden = !hasArt;
+  if (hasArt) meshes.filter(isArt).forEach((o) => { o.visible = $('optArtwork').checked; });
   box.hidden = meshes.length < 2 || meshes.length > 60;
   meshes.forEach((o, i) => {
     const id = 'layer' + i;
@@ -402,7 +469,11 @@ function syncUI() {      // apply the checkbox states as shown (the browser/host
   applyWire(); applyDouble();
 }
 function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v; renderer.toneMappingExposure = +$('optExposure').value; }
-function applyEnv() { scene.environment = envs[$('optEnv').value] ?? envs.studio; }
+function applyEnv() {
+  scene.environment = envs[$('optEnv').value] ?? envs.bright;
+  const r = THREE.MathUtils.degToRad(+$('optEnvRot').value);
+  scene.environmentRotation.set(0, r, 0); scene.backgroundRotation.set(0, r, 0);
+}
 function setLoading(v) { $('loading').hidden = !v; }
 function showError(msg) { const e = $('error'); e.hidden = !msg; e.textContent = msg || ''; }
 function eachMat(fn) { current?.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach(fn); }); }
@@ -428,6 +499,15 @@ $('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value
 $('optLight').oninput = () => { applyLight(); if (ptOn) { pt.updateLights(); pt.updateEnvironment(); } };
 $('optExposure').oninput = () => { applyLight(); if (ptOn) pt.reset(); };
 $('optEnv').onchange = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
+$('optEnvRot').oninput = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
+function changeVariant(set, value) {
+  if (!session) return;
+  session.variants = { ...session.variants, [set]: value };
+  loadSession(true);                      // re-convert with the new selection, keep the camera
+}
+$('optConfig').onchange = (e) => changeVariant('Visibility', e.target.value);
+$('optArtVar').onchange = (e) => changeVariant('Artwork', e.target.value);
+$('optArtwork').onchange = () => { if (current) { buildLayers(current); if (ptOn) applyPTScene(); } };
 $('optShadow').onchange = (e) => { sun.castShadow = e.target.checked && !ptOn; floor.visible = !!current && (ptOn || e.target.checked); };
 $('optPT').onchange = (e) => { if (e.target.checked) enablePT(); else disablePT(); };
 $('fitBtn').onclick = fitView;

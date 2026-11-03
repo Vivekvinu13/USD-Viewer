@@ -56,3 +56,11 @@ automatically. Textures in `.exr` can't be shown in GLB and fall back to the mat
 Grip's artwork images are 2×2 atlases (label colour / reflection+gloss+metalness / opacity / normal map).
 The converter decodes them the same way Grip's `artwork_texture` shader does, using the material's own
 `roughness_black`, `base_color_black/white` and `use_refractive_artwork` settings.
+
+## Configurations, artwork and lighting (USD projects with Grip-style variants)
+- **State**: Dry / Wet / Open cap · dry / Open cap · wet. These switch the file's own `Visibility` variant on the
+  server, so the right cap and droplet meshes appear. Droplets are exported as transmissive glass.
+- **Artwork file**: Clean / Optimized / Original (the file's `Artwork` variant).
+- **Show artwork**: untick to see the bare aluminium can.
+- **Lighting**: Bright studio, Dark studio, Soft room, and *Grip studio (from file)* when the project has a
+  DomeLight image. **Light angle** rotates the environment.

@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 
 /** A photo-studio lighting rig: dark dome plus bright soft-boxes (used as the reflection/light environment). */
-export function makeStudioScene() {
+export function makeStudioScene({ bright = false } = {}) {
   const s = new THREE.Scene();
+  // a bright dome lets polished metal read as silver; the dark one gives dramatic, mirror-like reflections
   s.add(new THREE.Mesh(new THREE.SphereGeometry(60, 32, 16),
-    new THREE.MeshBasicMaterial({ color: 0x23262c, side: THREE.BackSide })));
+    new THREE.MeshBasicMaterial({ color: bright ? new THREE.Color(0xc4c9d1).multiplyScalar(1.15) : 0x23262c, side: THREE.BackSide })));
   const panel = (w, h, pos, power, tint = 0xffffff) => {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
       new THREE.MeshBasicMaterial({ color: new THREE.Color(tint).multiplyScalar(power), side: THREE.DoubleSide }));

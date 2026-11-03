@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from usd_to_glb import VERSION, convert, pick_root
+from usd_to_glb import ENV_CACHE, VERSION, convert, pick_root
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_BYTES = 2 * 1024**3
@@ -37,7 +37,8 @@ def health():
 
 
 @app.post("/api/convert")
-async def convert_usd(files: list[UploadFile] = File(...), paths: list[str] = Form(default=[])):
+async def convert_usd(files: list[UploadFile] = File(...), paths: list[str] = Form(default=[]),
+                      variants: str = Form(default="")):
     work = Path(tempfile.mkdtemp(prefix="usdconv-"))
     try:
         total = 0
@@ -59,7 +60,11 @@ async def convert_usd(files: list[UploadFile] = File(...), paths: list[str] = Fo
                 dest.unlink()
         try:
             root = pick_root(work)
-            glb, info = convert(root)
+            try:
+                sel = json.loads(variants) if variants else {}
+            except ValueError:
+                sel = {}
+            glb, info = convert(root, {str(k): str(v) for k, v in sel.items()} if isinstance(sel, dict) else {})
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
@@ -67,6 +72,14 @@ async def convert_usd(files: list[UploadFile] = File(...), paths: list[str] = Fo
         return Response(glb, media_type="model/gltf-binary", headers={"X-Convert-Info": json.dumps(info)})
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+@app.get("/api/env/{env_id}")
+def get_env(env_id: str):
+    data = ENV_CACHE.get(env_id)
+    if data is None:
+        raise HTTPException(404, "environment expired")
+    return Response(data, media_type="application/octet-stream")
 
 
 dist = ROOT / "dist"
