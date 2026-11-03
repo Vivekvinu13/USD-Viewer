@@ -14,6 +14,7 @@ import trimesh
 from PIL import Image
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, UsdUtils
 
+VERSION = "3-artwork-atlas"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 4096
@@ -502,7 +503,7 @@ def convert(root: Path) -> tuple[bytes, dict]:
         if seen_names[name] > 1:
             name = f"{name}_{seen_names[name]}"
         scene.add_geometry(tm, node_name=name, geom_name=name)
-        diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None,
+        diag.append({"mesh": name, "material": material.get("name"), "texture": material.get("image") is not None, "atlas": bool(material.get("atlas")),
                      "uv": material.get("uv"), "alpha": bool(material.get("alpha"))})
         n_meshes += 1; n_tris += len(tm.faces)
 
@@ -519,4 +520,4 @@ def convert(root: Path) -> tuple[bytes, dict]:
     if unresolved:
         names = sorted({Path(u).name for u in unresolved})
         warnings.append(f"{len(names)} referenced file(s) not included in the upload (e.g. {names[0]})")
-    return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag}
+    return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag, "version": VERSION}

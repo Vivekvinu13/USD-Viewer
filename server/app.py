@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from usd_to_glb import convert, pick_root
+from usd_to_glb import VERSION, convert, pick_root
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_BYTES = 2 * 1024**3
@@ -33,7 +33,7 @@ def _safe(rel: str) -> PurePosixPath:
 @app.get("/api/health")
 def health():
     from pxr import Usd
-    return {"ok": True, "usd": ".".join(map(str, Usd.GetVersion()))}
+    return {"ok": True, "usd": ".".join(map(str, Usd.GetVersion())), "converter": VERSION}
 
 
 @app.post("/api/convert")

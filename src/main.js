@@ -289,7 +289,7 @@ async function openFiles(fileList) {
         const { blob, info } = await convertOnServer(files);        // real OpenUSD
         const url = URL.createObjectURL(blob); blobUrls.push(url);
         root = await parseModel({ name: 'converted.glb' }, url, makeManager());
-        notes = ['Converted with OpenUSD', ...(info.warnings || [])];
+        notes = [`Converted with OpenUSD (converter ${info.version || 'old'})`, ...(info.warnings || [])];
         meshInfo = info.meshes || [];
       }
     }
@@ -361,7 +361,7 @@ function buildLayers(root) {
     const mi = (root.userData.meshInfo || []).find((m) => m.mesh === nm);
     if (mi) {
       const uv = mi.uv ? ` · UV ${mi.uv.varname || 'default'}${mi.uv.scale ? ' scale ' + mi.uv.scale.map((v) => +v.toFixed(3)).join('×') : ''}` : '';
-      lab.title = `material ${mi.material} · texture ${mi.texture ? 'yes' : 'no'}${mi.alpha ? ' · transparent' : ''}${uv}`;
+      lab.title = `material ${mi.material} · texture ${mi.texture ? 'yes' : 'no'}${mi.atlas ? ' · artwork atlas decoded' : ''}${mi.alpha ? ' · transparent' : ''}${uv}`;
     }
     lab.append(cb, ' ', nm);
     list.append(lab);
