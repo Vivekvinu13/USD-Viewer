@@ -96,3 +96,11 @@ If a project ships a picture of the intended look (a `render/`, `reference/` or 
 the 3D can be compared against it. A reference image cannot be turned into 3D geometry; it is a visual target only.
 Parts the converter could not show (unsupported shape types, empty meshes, errors) are listed in the Notes line, and every
 part hidden by the current state is listed in **Copy diagnostics**.
+
+## Project camera and lighting ("Grip camera")
+The converter reads the project's own camera (position, direction, lens, aperture) and its dome-light strength from the
+composed USD. The viewer opens on that camera (the **Grip camera** button returns to it; **Fit view** frames the model
+automatically), keeps the lens correct when the window is resized, and scales the *Grip studio* lighting by the file's
+dome intensity (Omniverse-style values such as 1136 are read as ×1.136). A camera that does not point at the model is
+ignored with a note. The dome's *rotation* is read and listed in **Copy diagnostics** but not applied (the axis
+convention cannot be verified without Omniverse); use the **Light angle** slider to turn the lighting.

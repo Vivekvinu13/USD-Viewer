@@ -74,6 +74,7 @@ function resize() {
   const r = canvas.parentElement.getBoundingClientRect();
   renderer.setSize(r.width, r.height, false);
   camera.aspect = r.width / Math.max(r.height, 1);
+  if (gripCamActive && gripLook?.camera) camera.fov = gripFov(gripLook.camera.fov_h);
   camera.updateProjectionMatrix();
 }
 addEventListener('resize', resize); resize();
@@ -352,7 +353,9 @@ $('refOpacity').oninput = (e) => { $('refOverlay').style.opacity = e.target.valu
 $('refImg').onclick = () => window.open($('refImg').src, '_blank');
 
 let loadAbort = null;
-let session = null;        // the files currently shown, so a configuration change can re-convert them
+let session = null;
+// the project's own camera and dome-light strength (read from the USD by the server)
+let gripLook = null, gripCamActive = false, gripEnvScale = 1;        // the files currently shown, so a configuration change can re-convert them
 let sessionToken = 0;
 
 async function loadSession(keepView) {
@@ -380,12 +383,15 @@ async function loadSession(keepView) {
         session.project = info.project || '';
         const url = URL.createObjectURL(blob); blobUrls.push(url);
         root = await parseModel({ name: 'converted.glb' }, url, makeManager());
-        notes = [`Converted with OpenUSD (converter ${info.version || 'old'})`, ...(info.warnings || [])];
+        notes = [`Converted with OpenUSD (converter ${info.version || 'old'})`,
+          ...(info.look?.camera ? [`project camera applied (${info.look.camera.fov_h.toFixed(0)}° lens)`] : []),
+          ...(info.look?.env ? [`light strength ×${info.look.env.scale.toFixed(2)}`] : []), ...(info.warnings || [])];
         meshInfo = info.meshes || []; srvInfo = info;
       }
     }
     if (!root) root = await parseModel(model, resources.get(model.name.toLowerCase()), makeManager(), files);
     if (token !== sessionToken) return;                       // a newer load started meanwhile
+    if (!keepView) { gripCamActive = false; camera.fov = 45; camera.updateProjectionMatrix(); }
     if (root.userData.notes?.length) notes = root.userData.notes;
     root.userData.notes = notes; root.userData.meshInfo = meshInfo; root.userData.skipped = srvInfo?.skipped || [];
     disposeCurrent();
@@ -411,7 +417,28 @@ async function loadSession(keepView) {
 // configuration menus, Grip lighting and droplet glass, driven by what the server reports
 const CONFIG_LABELS = { Dry: 'Dry', Wet: 'Wet (droplets)', Open_Dry: 'Open cap · dry', Open_Wet: 'Open cap · wet (droplets)' };
 const CONFIG_ORDER = ['Dry', 'Wet', 'Open_Dry', 'Open_Wet'];
+// Grip/Omniverse render with a square frame sized by the horizontal aperture: fit that square inside our viewport
+function gripFov(fovHDeg) {
+  const a = camera.aspect || 1;
+  return a >= 1 ? fovHDeg : THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(fovHDeg / 2)) / a));
+}
+function applyGripCamera() {
+  const c = gripLook?.camera; if (!c) return;
+  const pos = new THREE.Vector3(...c.pos), dir = new THREE.Vector3(...c.dir).normalize();
+  const ctr = new THREE.Box3().setFromObject(pivot).getCenter(new THREE.Vector3());
+  const dist = Math.max(ctr.clone().sub(pos).dot(dir), 1e-4);
+  camera.up.set(0, 1, 0);
+  camera.position.copy(pos);
+  controls.target.copy(pos.clone().addScaledVector(dir, dist));
+  camera.fov = gripFov(c.fov_h); camera.near = dist / 1000; camera.far = dist * 100;
+  camera.updateProjectionMatrix(); controls.update();
+  gripCamActive = true;
+}
 async function setupFromServer(info, keepView) {
+  gripLook = info.look || null;
+  gripEnvScale = gripLook?.env?.scale > 0 ? gripLook.env.scale : 1;
+  $('gripCamBtn').hidden = !gripLook?.camera;
+  if (gripLook?.camera && !keepView) applyGripCamera();
   const vis = (info.variants || []).find((v) => v.set === 'Visibility');
   const art = (info.variants || []).find((v) => v.set === 'Artwork');
   $('variantBox').hidden = !(vis || art);
@@ -596,7 +623,7 @@ function applyTint() {
   });
   if (ptOn && pt) pt.updateMaterials();
 }
-function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v; renderer.toneMappingExposure = +$('optExposure').value; }
+function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v * ($('optEnv').value === 'grip' ? gripEnvScale : 1); renderer.toneMappingExposure = +$('optExposure').value; }
 function applyEnv() {
   scene.environment = envs[$('optEnv').value] ?? envs.bright;
   const r = THREE.MathUtils.degToRad(+$('optEnvRot').value);
@@ -635,7 +662,7 @@ $('optZup').onchange = (e) => { pivot.rotation.x = e.target.checked ? -Math.PI /
 $('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value); if (ptOn) pt.updateEnvironment(); };
 $('optLight').oninput = () => { applyLight(); if (ptOn) { pt.updateLights(); pt.updateEnvironment(); } };
 $('optExposure').oninput = () => { applyLight(); if (ptOn) pt.reset(); };
-$('optEnv').onchange = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
+$('optEnv').onchange = () => { applyEnv(); applyLight(); if (ptOn) pt.updateEnvironment(); };
 $('optTint').oninput = applyTint;
 $('optEnvRot').oninput = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
 function changeVariant(set, value) {
@@ -648,7 +675,8 @@ $('optArtVar').onchange = (e) => changeVariant('Artwork', e.target.value);
 $('optArtwork').onchange = () => { if (current) { buildLayers(current); if (ptOn) applyPTScene(); } };
 $('optShadow').onchange = (e) => { sun.castShadow = e.target.checked && !ptOn; floor.visible = !!current && (ptOn || e.target.checked); };
 $('optPT').onchange = (e) => { if (e.target.checked) enablePT(); else disablePT(); };
-$('fitBtn').onclick = fitView;
+$('fitBtn').onclick = () => { gripCamActive = false; camera.fov = 45; camera.updateProjectionMatrix(); fitView(); };
+$('gripCamBtn').onclick = applyGripCamera;
 $('animSel').onchange = (e) => playAnim(+e.target.value);
 $('animPlay').onclick = (e) => { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; };
 $('shotBtn').onclick = () => {

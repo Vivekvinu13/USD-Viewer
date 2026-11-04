@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "9-skipped-report"
+VERSION = "10-grip-look"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
@@ -641,6 +641,53 @@ def encode_environment(path: str, w: int = 1024, h: int = 512) -> bytes | None:
 
 
 # --------------------------------------------------------------------------- glTF post-processing
+def extract_look(stage, xf_cache, to_unit: Gf.Matrix4d, bounds, warnings: list[str]) -> dict:
+    """The project's own camera and dome-light settings (what the reference render was made with)."""
+    look: dict = {}
+    # ---- camera
+    cam_prim = None
+    for prim in stage.Traverse():
+        if prim.IsA(UsdGeom.Camera):
+            if cam_prim is None or prim.GetName() == "default":
+                cam_prim = prim
+            if prim.GetName() == "default":
+                break
+    if cam_prim is not None and bounds is not None:
+        cam = UsdGeom.Camera(cam_prim)
+        focal = float(cam.GetFocalLengthAttr().Get() or 50.0)
+        h_ap = float(cam.GetHorizontalApertureAttr().Get() or 36.0)
+        M = xf_cache.GetLocalToWorldTransform(cam_prim) * to_unit
+        pos = np.array(M.Transform(Gf.Vec3d(0, 0, 0)), dtype=float)
+        fwd = np.array(M.TransformDir(Gf.Vec3d(0, 0, -1)), dtype=float)
+        up = np.array(M.TransformDir(Gf.Vec3d(0, 1, 0)), dtype=float)
+        fwd /= max(np.linalg.norm(fwd), 1e-12); up /= max(np.linalg.norm(up), 1e-12)
+        center = (bounds[0] + bounds[1]) / 2.0
+        radius = float(np.linalg.norm(bounds[1] - bounds[0])) / 2.0
+        to_c = center - pos
+        dist = float(np.linalg.norm(to_c))
+        cos_a = float(np.dot(fwd, to_c / max(dist, 1e-12)))
+        if cos_a > 0.6 and 0.3 * radius < dist < 200 * radius:      # sanity: it must actually look at the model
+            look["camera"] = {"name": cam_prim.GetName(), "pos": pos.tolist(), "dir": fwd.tolist(), "up": up.tolist(),
+                              "fov_h": math.degrees(2 * math.atan(h_ap / (2 * focal))), "focal": focal, "aperture": h_ap}
+        else:
+            warnings.append(f"project camera '{cam_prim.GetName()}' was ignored: it does not point at the model "
+                            f"(aim {cos_a:.2f}, distance {dist / max(radius, 1e-9):.1f}x model size)")
+    # ---- dome light strength (Omniverse intensities are ~1000 for "normal"; plain USD uses ~1)
+    for prim in stage.Traverse():
+        if prim.IsA(UsdLux.DomeLight):
+            inten = _val(prim.GetAttribute("inputs:intensity"))
+            expo = _val(prim.GetAttribute("inputs:exposure")) or 0.0
+            raw = float(inten) if inten is not None else 1.0
+            scale = (raw / 1000.0 if raw >= 100.0 else raw) * (2.0 ** float(expo))
+            M = xf_cache.GetLocalToWorldTransform(prim) * to_unit
+            rot = M.RemoveScaleShear().ExtractRotation().Decompose(
+                Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 1, 0), Gf.Vec3d(0, 0, 1))
+            look["env"] = {"intensity_raw": raw, "exposure": float(expo), "scale": scale,
+                           "rotation_xyz_deg": [round(float(x), 1) for x in rot]}
+            break
+    return look
+
+
 def default_k(mesh_name: str, tint: list[float]) -> float:
     """Thickness/attenuation ratio k so the glass or liquid comes out at a sensible brightness.
     Transmittance = tint ** k (Beer-Lambert). Thin glass walls stay light; liquids are deeper."""
@@ -787,6 +834,12 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
                 ENV_CACHE.pop(next(iter(ENV_CACHE)))
             ENV_CACHE[eid] = data
             env_info = {"id": eid, "w": 1024, "h": 512, "name": Path(env_path).name}
+    look = {}
+    try:
+        look = extract_look(stage, xf_cache, to_unit, scene.bounds, warnings)
+    except Exception as e:  # noqa: BLE001
+        warnings.append(f"project camera/lighting not read: {type(e).__name__}: {e}")
+    print(f"[look] {json.dumps(look)[:300]}", flush=True)
     bad = [x for x in skipped if x["problem"]]
     if bad:
         warnings.append(f"{len(bad)} part(s) could not be shown: " +
@@ -802,4 +855,4 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
         names = sorted({Path(u).name for u in unresolved})
         warnings.append(f"{len(names)} referenced file(s) not included in the upload (e.g. {names[0]})")
     return glb, {"root": root.name, "meshes": n_meshes, "triangles": n_tris, "warnings": sorted(set(warnings))[:20], "meshes": diag, "version": VERSION,
-                "variants": available_variants, "env": env_info, "skipped": skipped[:60]}
+                "variants": available_variants, "env": env_info, "skipped": skipped[:60], "look": look}
