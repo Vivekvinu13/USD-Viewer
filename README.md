@@ -104,3 +104,8 @@ automatically), keeps the lens correct when the window is resized, and scales th
 dome intensity (Omniverse-style values such as 1136 are read as ×1.136). A camera that does not point at the model is
 ignored with a note. The dome's *rotation* is read and listed in **Copy diagnostics** but not applied (the axis
 convention cannot be verified without Omniverse); use the **Light angle** slider to turn the lighting.
+
+## Sharp label artwork
+Ordinary textures are capped at 2048 px for speed, but Grip's artwork sheet (four quarters, each spanning the whole can) is
+read at up to 4096 px, so the label colour quarter is 2048 px and fine print stays legible. The viewer also uses the
+maximum texture anisotropy so small text stays readable on curved or angled surfaces.

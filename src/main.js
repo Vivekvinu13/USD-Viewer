@@ -492,6 +492,14 @@ function prepare(root, file) {
   });
   applyWire(); applyDouble();
   buildLayers(root);
+  // sharper textures on curved or angled surfaces (keeps small print legible on a can label)
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'alphaMap', 'emissiveMap']) {
+      if (m[k]) { m[k].anisotropy = maxAniso; m[k].needsUpdate = true; }
+    }
+  });
   root.updateMatrixWorld(true);
   const trans = [];
   root.traverse((o) => {

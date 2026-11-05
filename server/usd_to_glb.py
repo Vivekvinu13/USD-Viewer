@@ -19,9 +19,10 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "10-grip-look"
+VERSION = "11-sharp-artwork"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
+ARTWORK_MAX = 4096        # artwork atlas: 4 quarters, so a 4096 sheet keeps a 2048 label
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
 
 try:
@@ -80,8 +81,8 @@ def _box_reduce(a: np.ndarray, limit: int) -> np.ndarray:
     return a[:h2, :w2].reshape(h2 // f, f, w2 // f, f, a.shape[2]).mean(axis=(1, 3), dtype=np.float32)
 
 
-def _exr_to_image(path: str, color: bool) -> Image.Image:
-    a = _read_exr(path, MAX_TEX)
+def _exr_to_image(path: str, color: bool, limit: int = MAX_TEX) -> Image.Image:
+    a = _read_exr(path, limit)
     if a.shape[-1] == 1:
         a = np.repeat(a, 3, axis=-1)
     elif a.shape[-1] == 2:
@@ -188,24 +189,25 @@ def _artwork_params(stage, mat_prim) -> dict:
 _img_cache: dict = {}
 
 
-def _load_image(path: str | None, warnings: list[str], color: bool = True):
-    """Load a texture as a PIL image. .exr files are converted (sRGB-encoded when `color`)."""
+def _load_image(path: str | None, warnings: list[str], color: bool = True, limit: int = MAX_TEX):
+    """Load a texture as a PIL image. .exr files are converted (sRGB-encoded when `color`).
+    `limit` caps the longest side; label artwork uses a higher one so fine print stays readable."""
     if not path:
         return None
-    key = (path, color)
+    key = (path, color, limit)
     if key in _img_cache:
         return _img_cache[key]
     ext = Path(path).suffix.lower()
     img = None
     try:
         if ext == ".exr":
-            img = _exr_to_image(path, color)
+            img = _exr_to_image(path, color, limit)
         elif ext in IMG_OK:
             img = Image.open(path); img.load()
         else:
             warnings.append(f"{ext} textures are not supported (using fallback colour)")
-        if img is not None and max(img.size) > MAX_TEX:
-            img.thumbnail((MAX_TEX, MAX_TEX))
+        if img is not None and max(img.size) > limit:
+            img.thumbnail((limit, limit), Image.LANCZOS)
     except Exception as e:  # noqa: BLE001
         warnings.append(f"could not read texture {Path(path).name}: {e}")
         img = None
@@ -348,7 +350,9 @@ def extract_material(mat: UsdShade.Material, stage, cache: dict, warnings: list[
         for p in stage.Traverse():
             if p.GetName() == "_artwork_controller":
                 a = p.GetAttribute("inputs:param_artwork_texture")
-                img = _load_image(_asset_path(a), warnings, False)      # raw: quarters carry data, not just colour
+                # raw: quarters carry data, not just colour. Keep it sharp: each quarter spans the whole can, so a
+                # 4096 sheet gives a 2048 label (fine print such as ingredients/slogans needs that)
+                img = _load_image(_asset_path(a), warnings, False, limit=ARTWORK_MAX)
                 if img is not None:
                     parts = decode_artwork_atlas(img, _artwork_params(stage, mat.GetPrim()))
                     info.update(image=parts["image"], mr=parts["mr"], normal=parts["normal"],
