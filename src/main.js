@@ -332,7 +332,21 @@ async function ensureAnalysis(pk) {
   pk.analysis = { file: pk.art, page: pk.page || 1, canvas, det: detectLabel(canvas) };
   return pk.analysis;
 }
+function fullBleed(an) {                                                                 // artwork that fills the whole picture = a flat label, not a photo of a pack
+  const { canvas, det } = an, w = canvas.width, h = canvas.height, c = canvas.getContext('2d', { willReadFrequently: true });
+  if (det.areaRatio > 0.8 && det.conf > 0.3) return true;
+  const strips = [[0, 0, w, 2], [0, h - 2, w, 2], [0, 0, 2, h], [w - 2, 0, 2, h]];
+  let varied = 0;
+  for (const [x, y, sw, sh] of strips) {
+    const d = c.getImageData(x, y, Math.max(1, sw), Math.max(1, sh)).data; let m = [0, 0, 0], q = [0, 0, 0], n = d.length / 4;
+    for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) { m[k] += d[i + k]; q[k] += d[i + k] * d[i + k]; }
+    const sd = Math.sqrt([0, 1, 2].reduce((a, k) => a + Math.max(0, q[k] / n - (m[k] / n) ** 2), 0) / 3);
+    if (sd > 28) varied++;
+  }
+  return varied >= 3;
+}
 function decideMode(pk, an) {
+  if (fullBleed(an)) return 'art';
   if (pk.pics.some((f) => PACK_FRONT.test(f.name) || PACK_BACK.test(f.name))) return 'shot';        // named like a pack shot
   if (looksLikePackShot(an.det)) return 'shot';
   if (an.det.conf >= 0.3 && an.det.areaRatio >= 0.01) return 'art';                          // a label found on a sheet
@@ -395,7 +409,7 @@ async function loadSession(keepView) {
         const an = await ensureAnalysis(pk);
         if (!pk.mode) pk.mode = decideMode(pk, an);
         if (pk.mode === 'art') {
-          const label = cropCanvas(an.canvas, pk.rect || an.det.rect);
+          const label = cropCanvas(an.canvas, pk.rect || (fullBleed(an) ? { x: 0, y: 0, w: an.canvas.width, h: an.canvas.height } : an.det.rect));
           pk.resolved = pk.container === 'auto' ? autoContainer(label.width / label.height, pk.art.name) : pk.container;
           root = buildWrapped({ label, id: pk.resolved, rot: pk.rot, pos: pk.pos, hscale: pk.hscale, tint: an.det.dominant });
           if (an.det.conf < 0.3 && !pk.rect) labelHint = 'I could not find the label automatically. Use "Adjust label area…" to drag a box over it.';

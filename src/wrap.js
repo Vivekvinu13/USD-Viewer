@@ -9,6 +9,14 @@ export function labelZone(c, aspect, R, H, pos, hscale) {
   if (c.kind === 'can') return { y0: 0.0125, y1: H - 0.027, auto: true };           // printed all over the straight body
   const top = (c.kind === 'pet' ? 0.58 : 0.66) * H, bot = 0.05 * H;
   const circ = 2 * Math.PI * R * 0.985;                                              // the sleeve wraps the full circumference
+  if (aspect < 2.2) {                                                                // a front panel: a patch on the bottle, not a full wrap
+    const hl = Math.min((top - bot) * 0.62 * hscale, (top - bot) * 0.96), arc = hl * aspect / R;
+    if (arc < 2 * Math.PI * 0.9) {
+      const yc = (pos ?? c.center) * H; let y0 = yc - hl / 2, y1 = yc + hl / 2;
+      if (y1 > top) { y0 -= y1 - top; y1 = top; } if (y0 < bot) { y1 += bot - y0; y0 = bot; }
+      return { y0, y1, auto: false, arc };
+    }
+  }
   let hl = Math.min(circ / aspect * hscale, (top - bot) * 0.96);
   const yc = (pos ?? c.center) * H;
   let y0 = yc - hl / 2, y1 = yc + hl / 2;
@@ -17,12 +25,12 @@ export function labelZone(c, aspect, R, H, pos, hscale) {
   return { y0, y1, auto: false };
 }
 
-function sleeveGeometry(body, y0, y1) {
+function sleeveGeometry(body, y0, y1, arc = 0, rot = 0) {
   const rings = 32, P = [], N = [], UV = [], I = [];
   for (let j = 0; j <= rings; j++) {
     const t = j / rings, y = y0 + (y1 - y0) * t, r = radiusAt(body, y) + 0.00035;
     for (let i = 0; i <= SEG; i++) {
-      const a = 2 * Math.PI * i / SEG, sx = Math.sin(a), cz = Math.cos(a);
+      const a = arc ? rot + (i / SEG - 0.5) * arc : 2 * Math.PI * i / SEG, sx = Math.sin(a), cz = Math.cos(a);
       P.push(r * sx, y, r * cz); N.push(sx, 0, cz); UV.push(i / SEG, t);
     }
   }
@@ -78,8 +86,8 @@ export function buildWrapped({ label, id, rot = 0, pos = null, hscale = 1, tint 
   const z = labelZone(c, aspect, R, H, pos, hscale);
   const tex = new THREE.CanvasTexture(scaled(label));
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.offset.x = 0.5 - rot / 360;                                                  // centre of the label faces the front
-  const printed = new THREE.Mesh(sleeveGeometry(body, z.y0, z.y1), new THREE.MeshPhysicalMaterial({
+  if (z.arc) tex.wrapS = THREE.ClampToEdgeWrapping; else tex.offset.x = 0.5 - rot / 360;                                                  // centre of the label faces the front
+  const printed = new THREE.Mesh(sleeveGeometry(body, z.y0, z.y1, z.arc || 0, rot * Math.PI / 180 + 0.64), new THREE.MeshPhysicalMaterial({
     map: tex, roughness: c.kind === 'can' ? 0.38 : 0.5, metalness: c.kind === 'can' ? 0.25 : 0,
     clearcoat: c.kind === 'can' ? 0.5 : 0.3, clearcoatRoughness: 0.3, side: THREE.FrontSide,      // outer face only: no mirrored print seen through clear plastic
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));

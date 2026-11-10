@@ -65,7 +65,7 @@ export function autoContainer(labelAspect, name = '') {
   if (m) { const v = parseFloat(m[1].replace(',', '.')); ml = /^ml$/i.test(m[2]) ? v : /^cl$/i.test(m[2]) ? v * 10 : v * 1000; }
   const wide = labelAspect >= 3.0;                 // a wide, short label is a bottle sleeve; a squarer one is a printed can body
   if (/glass|vidro/i.test(name) || (/contour/i.test(name) && !/pet|bopp|rotulo|label/i.test(name))) return 'glass330';   // "NRPET Contour" is a PET label, not glass
-  if (wide) return ml && ml >= 2000 ? 'pet25l' : ml && ml >= 1300 ? 'pet15l' : ml && ml >= 800 ? 'pet1l' : ml && ml > 350 ? 'pet500' : labelAspect > 4.2 ? 'pet1l' : 'pet500';
+  if (wide || (ml && ml >= 500)) return ml && ml >= 2000 ? 'pet25l' : ml && ml >= 1300 ? 'pet15l' : ml && ml >= 800 ? 'pet1l' : ml && ml > 350 ? 'pet500' : labelAspect > 4.2 ? 'pet1l' : 'pet500';
   if (ml && ml <= 230) return 'can200';
   return labelAspect < 1.9 ? 'can330s' : 'can330';
 }
