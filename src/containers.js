@@ -18,9 +18,12 @@ export const CONTAINERS = {
 export function containerParts(id, R, H) {
   const c = CONTAINERS[id];
   if (c.kind === 'can') {
-    return { body: V([[0, 0.0035], [0.40 * R, 0.0015], [0.66 * R, 0], [0.80 * R, 0], [0.88 * R, 0.0025], [0.95 * R, 0.0065], [R, 0.0125],
-      [R, H - 0.027], [0.985 * R, H - 0.021], [0.95 * R, H - 0.016], [0.905 * R, H - 0.0105], [0.89 * R, H - 0.0075],
-      [0.915 * R, H - 0.0045], [0.9 * R, H - 0.0005], [0.86 * R, H], [0.80 * R, H - 0.0025], [0.74 * R, H - 0.0045], [0, H - 0.0045]]), cap: null };
+    const t = H - 0.0095;                                                         // lid panel height: recessed below the rim, like a real can
+    return { body: V([[0, 0.0105], [0.30 * R, 0.009], [0.50 * R, 0.0048], [0.60 * R, 0.0012], [0.66 * R, 0], [0.72 * R, 0], [0.80 * R, 0.0012],
+      [0.90 * R, 0.0048], [0.97 * R, 0.0098], [R, 0.0165],
+      [R, H - 0.0205], [0.985 * R, H - 0.0168], [0.94 * R, H - 0.0122], [0.885 * R, H - 0.0086], [0.835 * R, H - 0.0062], [0.805 * R, H - 0.0045],   // shoulder tapering to the neck
+      [0.80 * R, H - 0.0022], [0.808 * R, H - 0.0006], [0.82 * R, H], [0.795 * R, H + 0.0003], [0.77 * R, H - 0.0004], [0.757 * R, H - 0.0025],      // the rolled seam
+      [0.75 * R, H - 0.0058], [0.742 * R, t + 0.0012], [0.715 * R, t], [0.66 * R, t - 0.0003], [0, t - 0.0003]]), cap: null };
   }
   if (c.kind === 'pet') {
     return {
@@ -37,6 +40,19 @@ export function containerParts(id, R, H) {
       [0.9 * R, 0.72 * H], [0.62 * R, 0.78 * H], [0.40 * R, 0.84 * H], [0.30 * R, 0.88 * H], [0.28 * R, 0.93 * H]]),
     cap: V([[0.28 * R, 0.93 * H], [0.36 * R, 0.935 * H], [0.38 * R, 0.945 * H], [0.36 * R, 0.975 * H], [0.30 * R, H], [0, H]]),
   };
+}
+
+/** Stay-on tab and rivet for a can lid (flat meshes sitting on the lid panel). */
+export function canTab(R, H) {
+  const lid = 0.75 * R, len = lid * 1.05, w = lid * 0.55, y = H - 0.0095 - 0.0003;
+  const sh = new THREE.Shape(), r = w * 0.45, x0 = -w / 2, x1 = w / 2, z0 = -len * 0.5, z1 = len * 0.5;
+  sh.moveTo(x0 + r, z0); sh.lineTo(x1 - r, z0); sh.quadraticCurveTo(x1, z0, x1, z0 + r); sh.lineTo(x1, z1 - r);
+  sh.quadraticCurveTo(x1, z1, x1 - r, z1); sh.lineTo(x0 + r, z1); sh.quadraticCurveTo(x0, z1, x0, z1 - r); sh.lineTo(x0, z0 + r); sh.quadraticCurveTo(x0, z0, x0 + r, z0);
+  const hole = new THREE.Path(); hole.absellipse(0, len * 0.22, w * 0.30, len * 0.20, 0, Math.PI * 2, true); sh.holes.push(hole);
+  const g = new THREE.ExtrudeGeometry(sh, { depth: 0.0006, bevelEnabled: false, curveSegments: 20 });
+  g.rotateX(-Math.PI / 2); g.translate(0, y + 0.0006, -len * 0.08);
+  const rivet = new THREE.CylinderGeometry(w * 0.16, w * 0.19, 0.0012, 24); rivet.translate(0, y + 0.0012, 0);
+  return { tab: g, rivet };
 }
 
 /** One closed profile (body + cap) for a single lathe. */
