@@ -109,3 +109,7 @@ maximum texture anisotropy so small text stays readable on curved or angled surf
 The gloss/metal and normal-map quarters of Grip's artwork sheet are smoothed to at most 1024 px (the label colour stays at
 full resolution), because their full-size fine grain shows up as vertical streaks on a flat label. The **Surface detail**
 slider scales the normal map's strength; lower is smoother.
+
+## Label transparency
+The artwork's opacity data is cleaned (hairline gaps closed, edges softened) so specks in the print data do not show the
+bare metal as thin pale lines; large genuinely transparent regions are kept.

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from PIL import Image
+from PIL import Image, ImageFilter
 import json
 import struct
 import time
@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "12-smooth-surface-maps"
+VERSION = "13-clean-opacity"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 DATA_QUARTER_MAX = 1024  # gloss/metal and normal-map quarters stay smooth: at full size their fine grain shows as streaks
@@ -166,7 +166,11 @@ def decode_artwork_atlas(img: Image.Image, p: dict) -> dict:
 
     def u8(x):
         return (np.clip(x, 0, 1) * 255 + 0.5).astype(np.uint8)
-    base_rgba = Image.fromarray(np.concatenate([u8(_srgb_encode(base)), u8(opacity)], axis=-1), "RGBA")
+    # Hairline gaps in the print-opacity data (specks, scratches) show the bare metal as thin pale lines once the
+    # texture is sharp. Close them (dilate then erode) and soften, so only real transparent regions stay transparent.
+    alpha = Image.fromarray(u8(opacity[..., 0]), "L")
+    alpha = alpha.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.MinFilter(7)).filter(ImageFilter.GaussianBlur(1.2))
+    base_rgba = Image.fromarray(np.concatenate([u8(_srgb_encode(base)), np.asarray(alpha)[..., None]], axis=-1), "RGBA")
     mr = Image.fromarray(u8(np.concatenate([np.zeros_like(rough), rough, metal], axis=-1)), "RGB")
     normal = Image.fromarray(u8(br), "RGB")
     # the label colour keeps full resolution (sharp small print); the *data* maps are smoothed to <= 1024 px, which is
