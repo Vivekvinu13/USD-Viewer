@@ -413,7 +413,9 @@ async function loadSession(keepView) {
           pk.resolved = pk.container === 'auto' ? autoContainer(label.width / label.height, pk.art.name) : pk.container;
           root = buildWrapped({ label, id: pk.resolved, rot: pk.rot, pos: pk.pos, hscale: pk.hscale, tint: an.det.dominant });
           if (an.det.conf < 0.3 && !pk.rect) labelHint = 'I could not find the label automatically. Use "Adjust label area…" to drag a box over it.';
-        } else if (pk.mode === 'shot') root = await buildPackCan({ front: pk.front, back: pk.back, size: pk.container });
+        } else if (pk.mode === 'shot') root = pk.art?.kind === 'pdf'                                                      // a PDF page has no photo: use the label found on it as the front
+            ? await buildPackCan({ front: cropCanvas(an.canvas, pk.rect || an.det.rect), back: null, size: pk.container })
+            : await buildPackCan({ front: pk.front, back: pk.back, size: pk.container });
         else root = await sheets();
       } else root = await sheets();
     }

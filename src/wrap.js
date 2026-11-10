@@ -1,7 +1,7 @@
 // Roll a flat label (cropped from an artwork sheet) around a default container: a printed can body, or a sleeve label on a
 // PET / glass bottle, sized from the label's proportions.
 import * as THREE from 'three';
-import { CONTAINERS, canTab, containerParts, radiusAt } from './containers.js';
+import { CONTAINERS, bodyMaterial, canTab, containerParts, petaloid, radiusAt } from './containers.js';
 
 const SEG = 180;
 
@@ -59,25 +59,13 @@ export function buildWrapped({ label, id, rot = 0, pos = null, hscale = 1, tint 
   const c = CONTAINERS[id], R = c.D / 2, H = c.H;
   const { body, cap } = containerParts(id, R, H);
   const group = new THREE.Group();
-  const bodyMat = {
-    can: new THREE.MeshPhysicalMaterial({ color: 0xb4b8be, metalness: 1, roughness: 0.24, side: THREE.DoubleSide }),
-    pet: new THREE.MeshPhysicalMaterial({ color: 0xeef3f5, roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.08, transparent: true,
-      opacity: 0.88, envMapIntensity: 1.3, side: THREE.DoubleSide }),
-    glass: new THREE.MeshPhysicalMaterial({ color: 0xd5ecdc, roughness: 0.04, transparent: true, opacity: 0.32, envMapIntensity: 1.6,
-      side: THREE.DoubleSide, depthWrite: false }),
-  }[c.kind];
-  const bodyMesh = new THREE.Mesh(new THREE.LatheGeometry(body, SEG), bodyMat);
+  const bodyMat = bodyMaterial(c.kind);
+  const bodyGeo = new THREE.LatheGeometry(body, SEG);
+  const bodyMesh = new THREE.Mesh(c.kind === 'pet' ? petaloid(bodyGeo, R, H) : bodyGeo, bodyMat);
   bodyMesh.name = c.kind === 'can' ? 'can body (aluminium)' : 'container body'; group.add(bodyMesh);
   if (c.kind === 'can') {
     const { tab, rivet } = canTab(R, H), m = new THREE.MeshPhysicalMaterial({ color: 0xc4c8cd, metalness: 1, roughness: 0.3, side: THREE.DoubleSide });
     const t1 = new THREE.Mesh(tab, m); t1.name = 'can lid tab'; const t2 = new THREE.Mesh(rivet, m); t2.name = 'can lid tab rivet'; group.add(t1, t2);
-  }
-  if (c.kind === 'glass') {                                                        // dark cola inside the glass, up to the neck
-    const inner = body.filter((p) => p.y <= 0.80 * H).map((p) => new THREE.Vector2(p.x * 0.93, p.y + 0.002));
-    inner.push(new THREE.Vector2(0.28 * R, 0.80 * H), new THREE.Vector2(0, 0.80 * H));
-    const liquid = new THREE.Mesh(new THREE.LatheGeometry(inner, SEG),
-      new THREE.MeshPhysicalMaterial({ color: 0x2a1207, roughness: 0.1, clearcoat: 1, envMapIntensity: 0.8 }));
-    liquid.name = 'liquid'; liquid.renderOrder = -1; group.add(liquid);
   }
   if (cap) {
     const col = new THREE.Color(`rgb(${tint[0]},${tint[1]},${tint[2]})`);
@@ -92,8 +80,8 @@ export function buildWrapped({ label, id, rot = 0, pos = null, hscale = 1, tint 
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.ClampToEdgeWrapping;
   if (z.arc) tex.wrapS = THREE.ClampToEdgeWrapping; else tex.offset.x = 0.5 - rot / 360;                                                  // centre of the label faces the front
   const printed = new THREE.Mesh(sleeveGeometry(body, z.y0, z.y1, z.arc || 0, rot * Math.PI / 180 + 0.64), new THREE.MeshPhysicalMaterial({
-    map: tex, roughness: c.kind === 'can' ? 0.38 : 0.5, metalness: c.kind === 'can' ? 0.25 : 0,
-    clearcoat: c.kind === 'can' ? 0.5 : 0.3, clearcoatRoughness: 0.3, side: THREE.FrontSide,      // outer face only: no mirrored print seen through clear plastic
+    map: tex, roughness: 0.42, metalness: 0, envMapIntensity: 0.65,
+    clearcoat: c.kind === 'can' ? 0.35 : 0.2, clearcoatRoughness: 0.35, side: THREE.FrontSide,      // outer face only: no mirrored print seen through clear plastic
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
   printed.name = 'label'; printed.renderOrder = 2; group.add(printed);
   group.userData.notes = [];

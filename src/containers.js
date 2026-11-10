@@ -27,7 +27,7 @@ export function containerParts(id, R, H) {
   }
   if (c.kind === 'pet') {
     return {
-      body: V([[0, 0.004], [0.55 * R, 0.0015], [0.8 * R, 0], [0.92 * R, 0.004], [R, 0.014], [R, 0.58 * H], [0.985 * R, 0.62 * H],
+      body: V([[0, 0.030 * H], [0.30 * R, 0.026 * H], [0.55 * R, 0.012 * H], [0.72 * R, 0.002 * H], [0.86 * R, 0.003 * H], [0.95 * R, 0.014 * H], [R, 0.045 * H], [R, 0.58 * H], [0.985 * R, 0.62 * H],
         [0.93 * R, 0.66 * H], [0.80 * R, 0.705 * H], [0.60 * R, 0.76 * H], [0.45 * R, 0.82 * H], [0.43 * R, 0.855 * H], [0.43 * R, 0.895 * H]]),
       cap: V([[0.43 * R, 0.895 * H], [0.52 * R, 0.9 * H], [0.52 * R, 0.91 * H], [0.46 * R, 0.917 * H], [0.5 * R, 0.925 * H],
         [0.5 * R, 0.985 * H], [0.45 * R, H], [0, H]]),
@@ -40,6 +40,28 @@ export function containerParts(id, R, H) {
       [0.9 * R, 0.72 * H], [0.62 * R, 0.78 * H], [0.40 * R, 0.84 * H], [0.30 * R, 0.88 * H], [0.28 * R, 0.93 * H]]),
     cap: V([[0.28 * R, 0.93 * H], [0.36 * R, 0.935 * H], [0.38 * R, 0.945 * H], [0.36 * R, 0.975 * H], [0.30 * R, H], [0, H]]),
   };
+}
+
+/** Push the base of a lathe into five feet (petaloid) so a PET bottle stands on them like the real thing. */
+export function petaloid(geo, R, H) {
+  const pos = geo.attributes.position, lim = 0.075 * H;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i), r = Math.hypot(x, z);
+    if (y >= lim || r < 0.2 * R) continue;
+    const k = Math.pow(1 - y / lim, 1.5), th = Math.atan2(x, z), valley = (1 - Math.cos(5 * th)) / 2;
+    const f = 1 - 0.10 * k * valley;
+    pos.setXYZ(i, x * f, y + 0.020 * H * k * valley, z * f);
+  }
+  geo.computeVertexNormals(); return geo;
+}
+
+/** Shared body materials: brushed-looking aluminium, clear PET, clear green-tinged glass. */
+export function bodyMaterial(kind) {
+  if (kind === 'can') return new THREE.MeshPhysicalMaterial({ color: 0xc6cad0, metalness: 1, roughness: 0.2, anisotropy: 0.4, side: THREE.DoubleSide, envMapIntensity: 1.25 });
+  // clear plastic / glass: mostly see-through with bright edge reflections (a dark backdrop would turn real transmission into "cola")
+  const m = new THREE.MeshPhysicalMaterial({ color: kind === 'pet' ? 0xf4fafc : 0xe4f6ea, roughness: 0.04, transparent: true, opacity: kind === 'pet' ? 0.3 : 0.34,
+    clearcoat: 1, clearcoatRoughness: 0.03, ior: kind === 'pet' ? 1.45 : 1.52, specularIntensity: 1, envMapIntensity: 2.4, side: THREE.DoubleSide, depthWrite: false });
+  return m;
 }
 
 /** Stay-on tab and rivet for a can lid (flat meshes sitting on the lid panel). */

@@ -2,11 +2,12 @@
 // pack shot is photographed (front picture on the front half, back picture on the back half).
 import * as THREE from 'three';
 import { decodeTiff } from './anyfile.js';
-import { CONTAINERS, containerProfile } from './containers.js';
+import { CONTAINERS, bodyMaterial, containerProfile, petaloid } from './containers.js';
 
 const isBg = (d, i) => d[i + 3] < 24 || (d[i] > 242 && d[i + 1] > 242 && d[i + 2] > 242);
 
 async function loadCanvas(file, maxSide = 2048) {
+  if (file instanceof HTMLCanvasElement) return file;                                // already decoded (a PDF page)
   if (/\.tiff?$/i.test(file.name) || file.kext === 'tif' || file.kext === 'tiff') return decodeTiff(file, maxSide);
   const url = URL.createObjectURL(file);
   try {
@@ -144,7 +145,7 @@ export async function buildPackCan({ front, back, size = 'auto' }) {
   const R = D / 2, bottle = CONTAINERS[id].kind !== 'can';
   const geo = new THREE.LatheGeometry(containerProfile(id, R, H), 160);
   const group = new THREE.Group();
-  const base = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color: 0xc9ccd1, metalness: 1, roughness: 0.28, side: THREE.DoubleSide }));
+  const base = new THREE.Mesh(CONTAINERS[id].kind === 'pet' ? petaloid(geo, R, H) : geo, bodyMaterial(CONTAINERS[id].kind));
   base.name = bottle ? 'bottle body' : 'can body (aluminium)'; group.add(base);
   const add = (isFront, canvas, name) => {
     const m = new THREE.Mesh(halfGeometry(geo, isFront, R, H), printedMaterial(canvas));
