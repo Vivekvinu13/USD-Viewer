@@ -363,7 +363,7 @@ async function loadSession(keepView) {
   } catch (e) {
     if (e?.name === 'AbortError') return;                    // superseded by a newer load
     console.error(e);
-    showError(`Could not open "${model.name}".\n${e?.message || e || 'unknown error'}\n(Use "Copy diagnostics" and send it if this keeps happening.)`);
+    showError(`Could not open "${model.name}".\n${e?.message || e || 'unknown error'}`);
   } finally { if (token === sessionToken) setLoading(false); }
 }
 
@@ -391,7 +391,6 @@ function applyGripCamera() {
 async function setupFromServer(info, keepView) {
   gripLook = info.look || null;
   gripEnvScale = gripLook?.env?.scale > 0 ? gripLook.env.scale : 1;
-  $('gripCamBtn').hidden = !gripLook?.camera;
   if (gripLook?.camera && !keepView) applyGripCamera();
   const vis = (info.variants || []).find((v) => v.set === 'Visibility');
   const art = (info.variants || []).find((v) => v.set === 'Artwork');
@@ -444,7 +443,7 @@ function prepare(root, file) {
       if (!o.material) o.material = new THREE.MeshStandardMaterial({ color: 0xb8c0cc });
     }
   });
-  applyWire(); applyDouble();
+  applyWire();
   buildLayers(root);
   // sharper textures on curved or angled surfaces (keeps small print legible on a can label)
   const maxAniso = renderer.capabilities.getMaxAnisotropy();
@@ -454,7 +453,6 @@ function prepare(root, file) {
       if (m[k]) { m[k].anisotropy = maxAniso; m[k].needsUpdate = true; }
     }
   });
-  applyDetail();
   // Printed labels and droplets are separate shells sitting a hair above the surface beneath. The depth buffer cannot tell
   // them apart from a distance (they flicker against each other as thin lines), so pull them slightly toward the camera.
   root.traverse((o) => {
@@ -567,13 +565,7 @@ function syncUI() {      // apply the checkbox states as shown (the browser/host
   scene.background = new THREE.Color($('optBg').value);
   applyLight(); applyEnv();
   sun.castShadow = $('optShadow').checked; floor.visible = !!current && $('optShadow').checked;
-  applyWire(); applyDouble();
-}
-function applyDetail() {            // strength of the normal-map (fine surface texture); lower = smoother
-  const k = +$('optDetail').value;
-  current?.traverse((o) => {
-    if (o.isMesh) for (const m of [].concat(o.material)) if (m.normalMap) m.normalScale.set(k, k);
-  });
+  applyWire();
 }
 function applyTint() {
   // Glass/liquid absorb light in proportion to thickness: transmittance = tint ** k. The slider scales k.
@@ -616,7 +608,6 @@ function setLoading(v) {
 function showError(msg) { const e = $('error'); e.hidden = !msg; e.textContent = msg || ''; }
 function eachMat(fn) { current?.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach(fn); }); }
 function applyWire() { const w = $('optWire').checked; eachMat((m) => (m.wireframe = w)); }
-function applyDouble() { const d = $('optDouble').checked; eachMat((m) => { m.side = d ? THREE.DoubleSide : (m.userData._side ?? THREE.FrontSide); m.needsUpdate = true; }); }
 function playAnim(i) { actions.forEach((a) => a.stop()); actions[i]?.reset().play(); }
 
 $('openBtn').onclick = () => $('fileInput').click();
@@ -630,7 +621,6 @@ $('sampleBtn').onclick = async () => {
 $('optGrid').onchange = (e) => (grid.visible = e.target.checked);
 $('optAxes').onchange = (e) => (axes.visible = e.target.checked);
 $('optWire').onchange = applyWire;
-$('optDouble').onchange = applyDouble;
 $('optRotate').onchange = (e) => { controls.autoRotate = e.target.checked; controls.autoRotateSpeed = 2; };
 $('optZup').onchange = (e) => { pivot.rotation.x = e.target.checked ? -Math.PI / 2 : 0; pivot.updateMatrixWorld(true); fitView(); };
 $('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value); };
@@ -638,7 +628,6 @@ $('optLight').oninput = applyLight;
 $('optExposure').oninput = applyLight;
 $('optEnv').onchange = () => { applyEnv(); applyLight(); };
 $('optTint').oninput = applyTint;
-$('optDetail').oninput = applyDetail;
 $('optEnvRot').oninput = applyEnv;
 function changeVariant(set, value) {
   if (!session) return;
@@ -650,7 +639,6 @@ $('optArtVar').onchange = (e) => changeVariant('Artwork', e.target.value);
 $('optArtwork').onchange = () => { if (current) buildLayers(current); };
 $('optShadow').onchange = (e) => { sun.castShadow = e.target.checked; floor.visible = !!current && e.target.checked; };
 $('fitBtn').onclick = () => { gripCamActive = false; camera.fov = 45; camera.updateProjectionMatrix(); fitView(); };
-$('gripCamBtn').onclick = applyGripCamera;
 $('animSel').onchange = (e) => playAnim(+e.target.value);
 $('animPlay').onclick = (e) => { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; };
 $('shotBtn').onclick = () => {
@@ -690,23 +678,3 @@ async function collectDropped(dt) {
 
 // expose for testing
 window.__viewer = { openFiles, scene, camera };
-
-// ---------- diagnostics: one click copies everything needed to debug a model that looks wrong
-$('diagBtn').onclick = async () => {
-  const lines = [
-    `viewer: ${location.href}`, `file: ${session?.model?.name || '-'}  mode: ${session?.mode || '-'}`,
-    `notes: ${(current?.userData.notes || []).join(' | ')}`,
-    `variants: ${JSON.stringify(session?.variants || {})}`, `meshes:`,
-    ...(current?.userData.meshInfo || []).map((m) => '  ' + JSON.stringify(m)),
-    `skipped parts: ${JSON.stringify(current?.userData.skipped || [])}`,
-  ];
-  current?.traverse((o) => {
-    if (o.isMesh) for (const m of [].concat(o.material)) {
-      lines.push(`  three ${o.name}: ${m.type} transmission=${m.transmission ?? '-'} nested=${m.userData.nested ?? '-'} thickness=${m.thickness ?? '-'} color=${m.color?.getHexString?.()}`);
-    }
-  });
-  const text = lines.join('\n');
-  try { await navigator.clipboard.writeText(text); }
-  catch { const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
-  $('diagBtn').textContent = 'Copied!'; setTimeout(() => { $('diagBtn').textContent = 'Copy diagnostics'; }, 1800);
-};

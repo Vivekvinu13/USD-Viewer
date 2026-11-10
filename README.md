@@ -83,32 +83,24 @@ Meshes are triangulated and welded with vectorised NumPy (a 3M-triangle bottle c
 ~4x smaller than before); EXR textures are decoded and downsampled a few rows at a time; opaque textures are stored as
 JPEG; only one conversion runs at a time (others wait in a queue), off the web server's main thread; a request the
 browser has abandoned is skipped. If a conversion runs out of memory the server now says so instead of an empty error.
-**Copy diagnostics** (side panel) copies the per-material details to send when a model looks wrong.
 
 ## Reference render and skipped parts
 If a project ships a picture of the intended look (a `render/`, `reference/` or `preview/` folder, or a file named like
 `render`, `preview`, `beauty`), the viewer shows it in a **Reference render** card with an *Overlay on 3D view* option, so
 the 3D can be compared against it. A reference image cannot be turned into 3D geometry; it is a visual target only.
 Parts the converter could not show (unsupported shape types, empty meshes, errors) are listed in the Notes line, and every
-part hidden by the current state is listed in **Copy diagnostics**.
-
+part hidden by the current state is listed in 
 ## Project camera and lighting ("Grip camera")
 The converter reads the project's own camera (position, direction, lens, aperture) and its dome-light strength from the
-composed USD. The viewer opens on that camera (the **Grip camera** button returns to it; **Fit view** frames the model
-automatically), keeps the lens correct when the window is resized, and scales the *Grip studio* lighting by the file's
+composed USD. The viewer opens on that camera (**Fit view** frames the model automatically), keeps the lens correct when the window is resized, and scales the *Grip studio* lighting by the file's
 dome intensity (Omniverse-style values such as 1136 are read as ×1.136). A camera that does not point at the model is
-ignored with a note. The dome's *rotation* is read and listed in **Copy diagnostics** but not applied (the axis
-convention cannot be verified without Omniverse); use the **Light angle** slider to turn the lighting.
+ignored with a note. The dome's *rotation* is read and listed in convention cannot be verified without Omniverse); use the **Light angle** slider to turn the lighting.
 
 ## Sharp label artwork
 Ordinary textures are capped at 2048 px for speed, but Grip's artwork sheet (four quarters, each spanning the whole can) is
 read at up to 4096 px, so the label colour quarter is 2048 px and fine print stays legible. The viewer also uses the
 maximum texture anisotropy so small text stays readable on curved or angled surfaces.
 
-## Surface detail
-The gloss/metal and normal-map quarters of Grip's artwork sheet are smoothed to at most 1024 px (the label colour stays at
-full resolution), because their full-size fine grain shows up as vertical streaks on a flat label. The **Surface detail**
-slider scales the normal map's strength; lower is smoother.
 
 ## Label transparency
 The artwork's opacity data is cleaned (hairline gaps closed, edges softened) so specks in the print data do not show the
