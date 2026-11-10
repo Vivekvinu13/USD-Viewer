@@ -11,9 +11,7 @@
   },
   "dependencies": {
     "pdfjs-dist": "^6.5.438",
-    "three": "^0.187.0",
-    "three-gpu-pathtracer": "^0.0.28",
-    "three-mesh-bvh": "^0.9.18"
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "vite": "^8.0.0"

@@ -54,7 +54,6 @@ sun.shadow.radius = 6; sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
 scene.add(sun, sun.target);
 // ground: soft shadow catcher in normal mode, real matte floor in path-traced mode
 const floorShadow = new THREE.ShadowMaterial({ opacity: 0.38 });
-const floorPT = new THREE.MeshStandardMaterial({ color: 0x5f626a, roughness: 0.85, metalness: 0 });
 const floor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), floorShadow);
 floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; floor.visible = false;
 scene.add(floor);
@@ -79,56 +78,11 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
-// ---------- optional path tracing (photo-like, progressive) ----------
-let pt = null, ptOn = false;
-function ptStatus(t) { $('ptStatus').textContent = t; }
-async function enablePT() {
-  ptStatus('Loading path tracer…');
-  try {
-    if (!pt) {
-      const { WebGLPathTracer } = await import('three-gpu-pathtracer');
-      pt = new WebGLPathTracer(renderer);
-      pt.bounces = 8; pt.transmissiveBounces = 8; pt.filterGlossyFactor = 0.5;
-      pt.dynamicLowRes = true; pt.minSamples = 2;
-      pt.tiles.set(3, 3);          // render each frame in 3x3 tiles so the page stays responsive on modest GPUs
-    }
-    if (!$('optPT').checked) { ptStatus(''); return; }      // switched off again while loading
-    ptOn = true; applyPTScene();
-  } catch (e) {
-    console.error(e); ptOn = false; $('optPT').checked = false; ptStatus('');
-    showError('Path tracing is not available on this device/browser.\n' + (e?.message || e));
-  }
-}
-function setNested(on) {
-  current?.traverse((o) => {
-    if (!o.isMesh) return;
-    for (const m of [].concat(o.material)) if (m.userData.nested !== undefined) { m.transmission = on ? m.userData.nested : 0; m.needsUpdate = true; }
-  });
-  applyTint();
-}
-function applyPTScene() {
-  if (!ptOn || !pt) return;
-  setNested(true);
-  grid.visible = false; axes.visible = false;
-  floor.material = floorPT; floor.visible = !!current; sun.castShadow = false;
-  scene.updateMatrixWorld(true);
-  pt.setScene(scene, camera);
-  pt.updateEnvironment();
-}
-function disablePT() {
-  ptOn = false; ptStatus(''); setNested(false);
-  floor.material = floorShadow; sun.castShadow = $('optShadow').checked; floor.visible = !!current && $('optShadow').checked;
-  grid.visible = $('optGrid').checked; axes.visible = $('optAxes').checked;
-  renderer.setRenderTarget(null);
-}
-controls.addEventListener('change', () => { if (ptOn) pt.updateCamera(); });
-
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   if (mixer && !paused) mixer.update(dt);
   controls.update();
-  if (ptOn && pt) { pt.renderSample(); ptStatus(`Path tracing · ${Math.floor(pt.samples)} samples`); }
-  else renderer.render(scene, camera);
+  renderer.render(scene, camera);
 });
 
 // ---------- loading ----------
@@ -406,7 +360,6 @@ async function loadSession(keepView) {
     $('drop').classList.add('hidden');
     $('panel').hidden = false;
     if (!keepView) setupReference(session.mode === '3d' ? files : []);
-    if (ptOn) applyPTScene();
   } catch (e) {
     if (e?.name === 'AbortError') return;                    // superseded by a newer load
     console.error(e);
@@ -456,7 +409,7 @@ async function setupFromServer(info, keepView) {
   $('tintLabel').hidden = !(info.meshes || []).some((m) => m.glass);
   applyTint();
   if ((info.meshes || []).some((m) => m.glass) && !keepView) {      // clear liquid/glass reads best on a light backdrop
-    $('optBg').value = '#ffffff'; scene.background = new THREE.Color('#ffffff'); if (ptOn) pt.updateEnvironment();
+    $('optBg').value = '#ffffff'; scene.background = new THREE.Color('#ffffff');
   }
   if (info.env && !keepView) {
     try {
@@ -471,7 +424,7 @@ async function setupFromServer(info, keepView) {
           const op = document.createElement('option'); op.value = 'grip'; op.textContent = 'Grip studio (from file)';
           $('optEnv').prepend(op);
         }
-        $('optEnv').value = 'grip'; applyEnv(); if (ptOn) pt.updateEnvironment();
+        $('optEnv').value = 'grip'; applyEnv();
       }
     } catch (e) { console.warn('environment not loaded', e); }
   }
@@ -500,6 +453,7 @@ function prepare(root, file) {
       if (m[k]) { m[k].anisotropy = maxAniso; m[k].needsUpdate = true; }
     }
   });
+  applyDetail();
   root.updateMatrixWorld(true);
   const trans = [];
   root.traverse((o) => {
@@ -520,7 +474,7 @@ function prepare(root, file) {
         vol(a.box.clone().intersect(b.box)) / vol(a.box) > 0.7) || (looksLikeLiquid(a.name) && trans.length > 1);
     if (inner) {
       a.m.userData.nested = a.m.transmission;
-      if (!ptOn) { a.m.transmission = 0; a.m.needsUpdate = true; }
+      a.m.transmission = 0; a.m.needsUpdate = true;
     }
   }
   if (root.userData.meshInfo?.length) console.table(root.userData.meshInfo);
@@ -562,7 +516,7 @@ function buildLayers(root) {
     const lab = document.createElement('label');
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.id = id; cb.checked = o.visible;
-    cb.onchange = () => { o.visible = cb.checked; if (ptOn) applyPTScene(); };
+    cb.onchange = () => { o.visible = cb.checked; };
     const nm = o.name || o.parent?.name || 'mesh ' + (i + 1);
     const mi = (root.userData.meshInfo || []).find((m) => m.mesh === nm);
     if (mi) {
@@ -593,8 +547,7 @@ function fitView() {
   sc.left = -r * 2; sc.right = r * 2; sc.top = r * 2; sc.bottom = -r * 2; sc.near = r * 0.1; sc.far = r * 12;
   sc.updateProjectionMatrix();
   floor.scale.setScalar(r * 12); floor.position.set(c.x, box.min.y - r * 0.001, c.z);
-  floor.visible = ptOn || $('optShadow').checked;
-  if (ptOn) applyPTScene();
+  floor.visible = $('optShadow').checked;
 }
 
 // ---------- UI ----------
@@ -604,8 +557,14 @@ function syncUI() {      // apply the checkbox states as shown (the browser/host
   pivot.rotation.x = $('optZup').checked ? -Math.PI / 2 : 0; pivot.updateMatrixWorld(true);
   scene.background = new THREE.Color($('optBg').value);
   applyLight(); applyEnv();
-  sun.castShadow = $('optShadow').checked && !ptOn; floor.visible = !!current && (ptOn || $('optShadow').checked);
+  sun.castShadow = $('optShadow').checked; floor.visible = !!current && $('optShadow').checked;
   applyWire(); applyDouble();
+}
+function applyDetail() {            // strength of the normal-map (fine surface texture); lower = smoother
+  const k = +$('optDetail').value;
+  current?.traverse((o) => {
+    if (o.isMesh) for (const m of [].concat(o.material)) if (m.normalMap) m.normalScale.set(k, k);
+  });
 }
 function applyTint() {
   // Glass/liquid absorb light in proportion to thickness: transmittance = tint ** k. The slider scales k.
@@ -619,8 +578,7 @@ function applyTint() {
     const k = mi.k * mult;
     for (const m of [].concat(o.material)) {
       if (m.userData.nested !== undefined) {          // inner liquid: tinted solid in the normal view, true volume in path tracing
-        if (ptOn) m.color.setRGB(1, 1, 1);
-        else {
+        {
           let rgb = mi.tint_lin.map((c) => Math.pow(Math.max(c, 1e-4), k));
           const lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
           if (lum < 0.06) rgb = rgb.map((c) => Math.min(1, (c * 0.06) / Math.max(lum, 1e-6)));   // never pitch black: keep the hue
@@ -629,7 +587,6 @@ function applyTint() {
       } else m.thickness = k;
     }
   });
-  if (ptOn && pt) pt.updateMaterials();
 }
 function applyLight() { const v = +$('optLight').value; sun.intensity = 0.8 * v; scene.environmentIntensity = v * ($('optEnv').value === 'grip' ? gripEnvScale : 1); renderer.toneMappingExposure = +$('optExposure').value; }
 function applyEnv() {
@@ -663,16 +620,17 @@ $('sampleBtn').onclick = async () => {
 };
 $('optGrid').onchange = (e) => (grid.visible = e.target.checked);
 $('optAxes').onchange = (e) => (axes.visible = e.target.checked);
-$('optWire').onchange = () => { applyWire(); if (ptOn) applyPTScene(); };
-$('optDouble').onchange = () => { applyDouble(); if (ptOn) applyPTScene(); };
+$('optWire').onchange = applyWire;
+$('optDouble').onchange = applyDouble;
 $('optRotate').onchange = (e) => { controls.autoRotate = e.target.checked; controls.autoRotateSpeed = 2; };
 $('optZup').onchange = (e) => { pivot.rotation.x = e.target.checked ? -Math.PI / 2 : 0; pivot.updateMatrixWorld(true); fitView(); };
-$('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value); if (ptOn) pt.updateEnvironment(); };
-$('optLight').oninput = () => { applyLight(); if (ptOn) { pt.updateLights(); pt.updateEnvironment(); } };
-$('optExposure').oninput = () => { applyLight(); if (ptOn) pt.reset(); };
-$('optEnv').onchange = () => { applyEnv(); applyLight(); if (ptOn) pt.updateEnvironment(); };
+$('optBg').onchange = (e) => { scene.background = new THREE.Color(e.target.value); };
+$('optLight').oninput = applyLight;
+$('optExposure').oninput = applyLight;
+$('optEnv').onchange = () => { applyEnv(); applyLight(); };
 $('optTint').oninput = applyTint;
-$('optEnvRot').oninput = () => { applyEnv(); if (ptOn) pt.updateEnvironment(); };
+$('optDetail').oninput = applyDetail;
+$('optEnvRot').oninput = applyEnv;
 function changeVariant(set, value) {
   if (!session) return;
   session.variants = { ...session.variants, [set]: value };
@@ -680,15 +638,14 @@ function changeVariant(set, value) {
 }
 $('optConfig').onchange = (e) => changeVariant('Visibility', e.target.value);
 $('optArtVar').onchange = (e) => changeVariant('Artwork', e.target.value);
-$('optArtwork').onchange = () => { if (current) { buildLayers(current); if (ptOn) applyPTScene(); } };
-$('optShadow').onchange = (e) => { sun.castShadow = e.target.checked && !ptOn; floor.visible = !!current && (ptOn || e.target.checked); };
-$('optPT').onchange = (e) => { if (e.target.checked) enablePT(); else disablePT(); };
+$('optArtwork').onchange = () => { if (current) buildLayers(current); };
+$('optShadow').onchange = (e) => { sun.castShadow = e.target.checked; floor.visible = !!current && e.target.checked; };
 $('fitBtn').onclick = () => { gripCamActive = false; camera.fov = 45; camera.updateProjectionMatrix(); fitView(); };
 $('gripCamBtn').onclick = applyGripCamera;
 $('animSel').onchange = (e) => playAnim(+e.target.value);
 $('animPlay').onclick = (e) => { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; };
 $('shotBtn').onclick = () => {
-  if (!ptOn) renderer.render(scene, camera);
+  renderer.render(scene, camera);
   const a = document.createElement('a');
   a.href = canvas.toDataURL('image/png'); a.download = 'screenshot.png'; a.click();
 };

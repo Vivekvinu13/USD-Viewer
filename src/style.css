@@ -34,7 +34,6 @@ aside input[type=range] { width: 110px; }
 
 .layers { display: flex; flex-direction: column; max-height: 180px; overflow: auto; }
 .layers label { font-size: 12px; padding: 2px 0; justify-content: flex-start; word-break: break-all; }
-.ptStatus { font-size: 12px; color: var(--muted); min-height: 16px; }
 
 .refCard { position: absolute; left: 12px; bottom: 12px; width: 230px; padding: 8px; background: rgba(31,34,41,.94); border: 1px solid var(--line); border-radius: 10px; z-index: 4; display: flex; flex-direction: column; gap: 6px; }
 .refCard img { width: 100%; max-height: 260px; object-fit: contain; background: #fff; border-radius: 6px; cursor: zoom-in; }

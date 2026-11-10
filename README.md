@@ -31,7 +31,6 @@ scene. Things with no 3D or picture form (Word, Excel, random binaries) get a cl
 USD is parsed in-browser by Three.js's `USDLoader`. It handles meshes, transforms, hierarchy, common
 `UsdPreviewSurface` materials and textures, and `.usdz` packages, but it is not full OpenUSD:
 heavy composition (cross-file references/payloads/variants), Omniverse-specific MDL materials, and
-RTX path-traced lighting are not supported. Primitive shapes (`Cube`/`Sphere`/…) ignore `displayColor`.
 Tip: packaging as `.usdz` (self-contained) gives the best results. For full-fidelity USD, a server-side
 `usd-core` conversion to glTF could be added.
 
@@ -52,9 +51,6 @@ automatically. Textures in `.exr` can't be shown in GLB and fall back to the mat
 
 ## Look & lighting
 - **Lighting** presets (Studio / Soft room), **ground shadow**, light and exposure sliders.
-- **Path tracing** (checkbox): a progressive, photo-like render using your graphics card (`three-gpu-pathtracer`).
-  The image starts noisy and sharpens while you leave the camera still; moving the camera restarts it.
-  It needs a reasonably modern GPU; on weak hardware keep it off.
 - **Layers** panel: show/hide each mesh. Hover a layer to see which material, texture and UV set it uses.
 
 ## Grip artwork textures
@@ -73,8 +69,7 @@ The converter decodes them the same way Grip's `artwork_texture` shader does, us
 ## Glass and liquids
 Transmissive materials (bottles, liquids, droplets) use the material's *transmission colour* texture as their tint,
 plus its real index of refraction. A model with clear glass opens on a white background. In the normal view an
-object nested inside another transmissive object (liquid in a bottle) is shown as a tinted solid; **Path tracing**
-renders true refraction. Big textures are downsampled to 2048 px while decoding, and switching Wet/Dry reuses the
+object nested inside another transmissive object (liquid in a bottle) is shown as a tinted solid; Big textures are downsampled to 2048 px while decoding, and switching Wet/Dry reuses the
 files already on the server, so it no longer re-uploads or re-decodes them.
 
 ### Why dark transmission colours are normal
@@ -109,3 +104,8 @@ convention cannot be verified without Omniverse); use the **Light angle** slider
 Ordinary textures are capped at 2048 px for speed, but Grip's artwork sheet (four quarters, each spanning the whole can) is
 read at up to 4096 px, so the label colour quarter is 2048 px and fine print stays legible. The viewer also uses the
 maximum texture anisotropy so small text stays readable on curved or angled surfaces.
+
+## Surface detail
+The gloss/metal and normal-map quarters of Grip's artwork sheet are smoothed to at most 1024 px (the label colour stays at
+full resolution), because their full-size fine grain shows up as vertical streaks on a flat label. The **Surface detail**
+slider scales the normal map's strength; lower is smoother.

@@ -19,9 +19,10 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "11-sharp-artwork"
+VERSION = "12-smooth-surface-maps"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
+DATA_QUARTER_MAX = 1024  # gloss/metal and normal-map quarters stay smooth: at full size their fine grain shows as streaks
 ARTWORK_MAX = 4096        # artwork atlas: 4 quarters, so a 4096 sheet keeps a 2048 label
 MAX_TEX = 2048          # keeps the GLB small enough for a browser (huge EXRs are downsampled while decoding)
 
@@ -168,6 +169,14 @@ def decode_artwork_atlas(img: Image.Image, p: dict) -> dict:
     base_rgba = Image.fromarray(np.concatenate([u8(_srgb_encode(base)), u8(opacity)], axis=-1), "RGBA")
     mr = Image.fromarray(u8(np.concatenate([np.zeros_like(rough), rough, metal], axis=-1)), "RGB")
     normal = Image.fromarray(u8(br), "RGB")
+    # the label colour keeps full resolution (sharp small print); the *data* maps are smoothed to <= 1024 px, which is
+    # what Grip's renders effectively show (full-size scratch/grain data looks like vertical streaks on a flat label)
+    for_name = {"mr": mr, "normal": normal}
+    for k, im in for_name.items():
+        if max(im.size) > DATA_QUARTER_MAX:
+            f = DATA_QUARTER_MAX / max(im.size)
+            for_name[k] = im.resize((max(1, round(im.size[0] * f)), max(1, round(im.size[1] * f))), Image.LANCZOS)
+    mr, normal = for_name["mr"], for_name["normal"]
     return {"image": base_rgba, "mr": mr, "normal": normal, "has_alpha": float(opacity.min()) < 0.999}
 
 
