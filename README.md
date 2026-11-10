@@ -113,3 +113,9 @@ slider scales the normal map's strength; lower is smoother.
 ## Label transparency
 The artwork's opacity data is cleaned (hairline gaps closed, edges softened) so specks in the print data do not show the
 bare metal as thin pale lines; large genuinely transparent regions are kept.
+
+## Thin streaks when zoomed out (depth fighting)
+A printed label (and droplets) is a separate shell a hair above the surface beneath it. From a distance the depth buffer
+cannot tell the two apart, so the metal flickers through as thin vertical lines that vanish when you zoom in. Label and
+droplet shells are now pulled slightly toward the camera (polygon offset), and the camera's near/far range is tighter for
+better depth precision.

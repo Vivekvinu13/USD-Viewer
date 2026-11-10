@@ -383,7 +383,8 @@ function applyGripCamera() {
   camera.up.set(0, 1, 0);
   camera.position.copy(pos);
   controls.target.copy(pos.clone().addScaledVector(dir, dist));
-  camera.fov = gripFov(c.fov_h); camera.near = dist / 1000; camera.far = dist * 100;
+  camera.fov = gripFov(c.fov_h); camera.near = dist / 200; camera.far = dist * 50;
+  controls.minDistance = dist * 0.15;
   camera.updateProjectionMatrix(); controls.update();
   gripCamActive = true;
 }
@@ -454,6 +455,13 @@ function prepare(root, file) {
     }
   });
   applyDetail();
+  // Printed labels and droplets are separate shells sitting a hair above the surface beneath. The depth buffer cannot tell
+  // them apart from a distance (they flicker against each other as thin lines), so pull them slightly toward the camera.
+  root.traverse((o) => {
+    if (!o.isMesh || !/overlay|artwork|droplet/i.test(o.name || '')) return;
+    for (const m of [].concat(o.material)) { m.polygonOffset = true; m.polygonOffsetFactor = -4; m.polygonOffsetUnits = -4; m.needsUpdate = true; }
+    o.renderOrder = 1;
+  });
   root.updateMatrixWorld(true);
   const trans = [];
   root.traverse((o) => {
@@ -535,7 +543,8 @@ function fitView() {
   const r = Math.max(size.length() / 2, 1e-6);
   fitSize = r;
   const d = r / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2));
-  camera.near = d / 1000; camera.far = d * 100; camera.updateProjectionMatrix();
+  camera.near = d / 200; camera.far = d * 50; camera.updateProjectionMatrix();
+  controls.minDistance = r * 0.5; controls.maxDistance = d * 8;     // keep the camera outside the object, inside the depth range
   camera.position.copy(c).add(new THREE.Vector3(0.6, 0.45, 0.8).normalize().multiplyScalar(d));
   controls.target.copy(c); controls.update();
   grid.scale.setScalar((r * 4) / 10);   // 10-unit helper -> ~4x model radius
