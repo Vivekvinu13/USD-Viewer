@@ -80,6 +80,8 @@ async def convert_usd(request: Request, files: list[UploadFile] = File(default=[
                     fh.write(chunk)
             if dest.suffix.lower() == ".zip":
                 with zipfile.ZipFile(dest) as z:
+                    if len(z.infolist()) > 20000 or sum(i.file_size for i in z.infolist()) > 2 * MAX_BYTES:
+                        raise HTTPException(413, "Archive too large when unpacked")        # zip-bomb guard
                     for n in z.namelist():
                         _safe(n)                      # zip-slip guard
                     z.extractall(work)
