@@ -111,3 +111,9 @@ A printed label (and droplets) is a separate shell a hair above the surface bene
 cannot tell the two apart, so the metal flickers through as thin vertical lines that vanish when you zoom in. Label and
 droplet shells are now pulled slightly toward the camera (polygon offset), and the camera's near/far range is tighter for
 better depth precision.
+
+## Default artwork and droplets
+Projects that offer an *Original* artwork version open on it (it carries the complete label: claims, juice badge, QR
+code); the **Artwork file** menu still switches to Clean or Optimized. Droplets and glass use a physically sized
+thickness (a fraction of a millimetre for droplets, a few millimetres for glass walls) so beads look like clear water,
+showing the can through them, instead of milky or mercury-like.

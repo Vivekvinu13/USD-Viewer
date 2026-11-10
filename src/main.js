@@ -462,10 +462,15 @@ function prepare(root, file) {
   });
   root.updateMatrixWorld(true);
   const trans = [];
+  // Physical thickness drives refraction and absorption. It is in scene units (metres), so it must be tiny for droplets
+  // (a fraction of a millimetre) and a few millimetres for glass: a huge value makes each bead look far away and milky.
+  const objSize = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).length() / 2 || 0.1;
   root.traverse((o) => {
     if (!o.isMesh) return;
     for (const m of [].concat(o.material)) if (m.transmission > 0) {
       m.roughness = Math.min(m.roughness ?? 0.05, 0.05);
+      m.userData.th = (/droplet/i.test(o.name || '') ? 0.007 : 0.04) * objSize;
+      m.thickness = m.userData.th; m.attenuationDistance = Infinity;
       trans.push({ m, name: o.name || '', box: new THREE.Box3().setFromObject(o) });
     }
   });
@@ -585,7 +590,9 @@ function applyTint() {
           if (lum < 0.06) rgb = rgb.map((c) => Math.min(1, (c * 0.06) / Math.max(lum, 1e-6)));   // never pitch black: keep the hue
           m.color.setRGB(...rgb);
         }
-      } else m.thickness = k;
+      } else if (m.userData.th) {                      // absorption: transmittance = tint ** (thickness / distance)
+        m.thickness = m.userData.th; m.attenuationDistance = m.userData.th / k;
+      }
     }
   });
 }

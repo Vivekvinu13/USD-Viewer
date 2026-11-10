@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "13-clean-opacity"
+VERSION = "14-original-artwork"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 DATA_QUARTER_MAX = 1024  # gloss/metal and normal-map quarters stay smooth: at full size their fine grain shows as streaks
@@ -760,7 +760,13 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
     if not stage:
         raise ValueError(f"OpenUSD could not open {root.name}")
     available_variants = list_variants(stage)
-    apply_variants(stage, variants or {})
+    variants = dict(variants or {})
+    # Grip ships three print versions (Clean / Optimized / Original). "Original" carries the complete label (claims,
+    # juice badge, QR code) and is what the reference renders show, so open on it unless the user chose another.
+    art = next((v for v in available_variants if v["set"] == "Artwork"), None)
+    if art and "Artwork" not in variants and "original" in art["options"]:
+        variants["Artwork"] = "original"
+    apply_variants(stage, variants)
     for v in available_variants:                       # report what is selected now
         v["selected"] = (variants or {}).get(v["set"], v["selected"])
     warnings: list[str] = []
