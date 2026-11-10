@@ -469,8 +469,13 @@ function prepare(root, file) {
     if (!o.isMesh) return;
     for (const m of [].concat(o.material)) if (m.transmission > 0) {
       m.roughness = Math.min(m.roughness ?? 0.05, 0.05);
-      m.userData.th = (/droplet/i.test(o.name || '') ? 0.007 : 0.04) * objSize;
+      const drop = /droplet/i.test(o.name || '');
+      m.userData.th = (drop ? 0.03 : 0.04) * objSize;
       m.thickness = m.userData.th; m.attenuationDistance = Infinity;
+      if (drop) {                                       // water beads: strong refraction, only small reflected glints
+        m.roughness = 0; m.envMapIntensity = 0.5; m.ior = Math.min(m.ior || 1.33, 1.4);
+        m.transparent = false; m.depthWrite = true;
+      }
       trans.push({ m, name: o.name || '', box: new THREE.Box3().setFromObject(o) });
     }
   });

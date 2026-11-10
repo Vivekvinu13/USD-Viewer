@@ -117,3 +117,8 @@ Projects that offer an *Original* artwork version open on it (it carries the com
 code); the **Artwork file** menu still switches to Clean or Optimized. Droplets and glass use a physically sized
 thickness (a fraction of a millimetre for droplets, a few millimetres for glass walls) so beads look like clear water,
 showing the can through them, instead of milky or mercury-like.
+
+## Water droplets
+Droplets whose shape comes from an opacity mask are cut out cleanly (alpha mask) instead of being faded like a film, which
+gave frosted white blobs; they are refractive (IOR ~1.33) with a physically sized thickness, no roughness and only small
+reflected glints, so they read as clear water beads that magnify the can colour beneath.

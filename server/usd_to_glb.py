@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "14-original-artwork"
+VERSION = "15-water-droplets"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 DATA_QUARTER_MAX = 1024  # gloss/metal and normal-map quarters stay smooth: at full size their fine grain shows as streaks
@@ -447,6 +447,11 @@ def to_pbr(info: dict) -> trimesh.visual.material.PBRMaterial:
     kw["baseColorFactor"] = [int(round(c * 255)) for c in base]
     if info["alpha"]:
         kw["alphaMode"] = "BLEND"
+    if info.get("glass") and (info["alpha"] or kw.get("alphaMode") == "BLEND"):
+        # droplets/glass whose shape comes from an opacity mask: cut the shape out cleanly and let real refraction do
+        # the rest. Fading it like a film (BLEND) gives frosted white blobs instead of clear water.
+        kw["alphaMode"] = "MASK"
+        kw["alphaCutoff"] = 0.5
     return trimesh.visual.material.PBRMaterial(**kw)
 
 
