@@ -20,6 +20,7 @@ import { KMZLoader } from 'three/examples/jsm/loaders/KMZLoader.js';
 import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 import { XYZLoader } from 'three/examples/jsm/loaders/XYZLoader.js';
 import { MODEL_EXT, extOf, classify, sniffExt, buildImageSheets, buildPdfSheets } from './anyfile.js';
+import { buildPackCan, assignPack, looksLikePack, CAN_SIZES } from './pack.js';
 import { zipSync, unzipSync } from 'three/examples/jsm/libs/fflate.module.js';
 
 const $ = (id) => document.getElementById(id);
@@ -273,7 +274,13 @@ async function openFiles(fileList) {
   const pdf = files.find((f) => f.kind === 'pdf');
   if (pdf) { session = { files, model: pdf, variants: {}, mode: 'pdf' }; return loadSession(false); }
   const imgs = files.filter((f) => f.kind === 'image' || f.kind === 'hdr');
-  if (imgs.length) { session = { files, model: imgs[0], images: imgs, variants: {}, mode: 'images' }; return loadSession(false); }
+  if (imgs.length) {
+    const pics = imgs.filter((f) => f.kind === 'image'), pk = assignPack(pics);
+    // pictures named front/back (or FOP/BOP) open straight onto a can; any other picture can be wrapped with the checkbox
+    session = { files, model: imgs[0], images: imgs, variants: {}, mode: 'images',
+      pack: { on: looksLikePack(pics), size: 'auto', front: pk.front, back: pk.back, pics } };
+    return loadSession(false);
+  }
   setLoading(false);
   const f = dropped[0] ?? files[0];
   const kb = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
@@ -306,6 +313,21 @@ $('refOver').onchange = (e) => { $('refOverlay').hidden = !e.target.checked; };
 $('refOpacity').oninput = (e) => { $('refOverlay').style.opacity = e.target.value; };
 $('refImg').onclick = () => window.open($('refImg').src, '_blank');
 
+// ---------- pack on can: front-of-pack / back-of-pack pictures wrapped onto a can
+function setupPackUI() {
+  const pk = session?.mode === 'images' ? session.pack : null;
+  $('packBox').hidden = !pk?.pics.length;
+  if (!pk?.pics.length) return;
+  $('optCan').checked = pk.on;
+  const names = '<option value="-1">(none)</option>' + pk.pics.map((f, i) => `<option value="${i}">${f.name}</option>`).join('');
+  $('optFront').innerHTML = names; $('optBack').innerHTML = names;
+  $('optFront').value = String(pk.pics.indexOf(pk.front)); $('optBack').value = String(pk.pics.indexOf(pk.back));
+  $('optCanSize').innerHTML = Object.entries(CAN_SIZES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+  $('optCanSize').value = pk.size;
+  for (const id of ['canSizeLabel', 'frontLabel', 'backLabel']) $(id).hidden = !pk.on;
+}
+function changePack(fn) { const pk = session?.pack; if (!pk) return; fn(pk); loadSession(false); }
+
 let loadAbort = null;
 let session = null;
 // the project's own camera and dome-light strength (read from the USD by the server)
@@ -327,7 +349,12 @@ async function loadSession(keepView) {
   try {
     let root, notes = [], meshInfo = [], srvInfo = null;
     if (session.mode === 'pdf') root = await buildPdfSheets(model);
-    else if (session.mode === 'images') root = await buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext })));
+    else if (session.mode === 'images') {
+      const pk = session.pack;
+      root = pk?.on && (pk.front || pk.back)
+        ? await buildPackCan({ front: pk.front, back: pk.back, size: pk.size })
+        : await buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext })));
+    }
     else if (isUsdLayer(model) || (model.kext || extOf(model.name)) === 'usdz') {
       if (await serverAvailable()) {
         let res;
@@ -360,6 +387,7 @@ async function loadSession(keepView) {
     $('drop').classList.add('hidden');
     $('panel').hidden = false;
     if (!keepView) setupReference(session.mode === '3d' ? files : []);
+    setupPackUI();
   } catch (e) {
     if (e?.name === 'AbortError') return;                    // superseded by a newer load
     console.error(e);
@@ -628,6 +656,10 @@ $('optLight').oninput = applyLight;
 $('optExposure').oninput = applyLight;
 $('optEnv').onchange = () => { applyEnv(); applyLight(); };
 $('optTint').oninput = applyTint;
+$('optCan').onchange = (e) => changePack((pk) => { pk.on = e.target.checked; });
+$('optCanSize').onchange = (e) => changePack((pk) => { pk.size = e.target.value; });
+$('optFront').onchange = (e) => changePack((pk) => { pk.front = pk.pics[+e.target.value] || null; });
+$('optBack').onchange = (e) => changePack((pk) => { pk.back = pk.pics[+e.target.value] || null; });
 $('optEnvRot').oninput = applyEnv;
 function changeVariant(set, value) {
   if (!session) return;

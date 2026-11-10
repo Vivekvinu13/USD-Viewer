@@ -125,3 +125,11 @@ reflected glints, so they read as clear water beads that magnify the can colour 
 ## Side panel
 The Model section shows only the file name, triangle count and dimensions. The state is always *Dry*; the **Artwork file**
 menu (Clean / Optimized / Original) remains for projects that offer it.
+
+## Pack on can (front / back of pack)
+Drop a picture of the **front of pack** and/or **back of pack**. Pictures named like `front`, `back`, `FOP`, `BOP`, `pack`
+or `label` open straight onto a 3D can; any other picture can be wrapped with the **Wrap on a can** checkbox. Each picture
+is projected onto its side of the can the way a pack shot is photographed (front picture on the front half, back picture on
+the back half). A white or transparent backdrop is removed and the silhouette edge colour is extended outward so rims stay
+clean. With only a front, the back is a plain back in the can's colours. The can matches the picture's proportions, or pick
+Standard 330 ml, Sleek 330 ml or Slim 200 ml. Everything runs in the browser; nothing is uploaded.
