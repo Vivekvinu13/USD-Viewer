@@ -126,10 +126,16 @@ reflected glints, so they read as clear water beads that magnify the can colour 
 The Model section shows only the file name, triangle count and dimensions. The state is always *Dry*; the **Artwork file**
 menu (Clean / Optimized / Original) remains for projects that offer it.
 
-## Pack on can (front / back of pack)
+## Pack on can / bottle (front / back of pack)
 Drop a picture of the **front of pack** and/or **back of pack**. Pictures named like `front`, `back`, `FOP`, `BOP`, `pack`
 or `label` open straight onto a 3D can; any other picture can be wrapped with the **Wrap on a can** checkbox. Each picture
 is projected onto its side of the can the way a pack shot is photographed (front picture on the front half, back picture on
 the back half). A white or transparent backdrop is removed and the silhouette edge colour is extended outward so rims stay
 clean. With only a front, the back is a plain back in the can's colours. The can matches the picture's proportions, or pick
 Standard 330 ml, Sleek 330 ml or Slim 200 ml. Everything runs in the browser; nothing is uploaded.
+
+### TIFF artwork
+Print artwork usually arrives as `.tif`. TIFF files (plain, LZW, PackBits, JPEG and ZIP/deflate; 8- or 16-bit; RGB, CMYK or
+with transparency; striped or tiled) are decoded in the browser. The TIFF reader bundled with Three.js decodes ZIP/deflate
+files wrongly (most of the picture comes out black), so the viewer swaps in the standard inflate routine. Tall pictures
+(height over 2.75x the width) are fitted to a generic 500 ml PET bottle instead of a can; the **Shape** menu overrides this.

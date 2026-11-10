@@ -3,7 +3,7 @@ import * as THREE from 'three';
 
 export const MODEL_EXT = ['usd', 'usda', 'usdc', 'usdz', 'gltf', 'glb', 'dae', 'obj', 'fbx', 'stl', 'ply', '3mf', 'wrl',
   '3ds', 'pcd', 'xyz', 'amf', 'kmz'];
-export const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg', 'ico'];
+export const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg', 'ico', 'tif', 'tiff'];
 export const HDR_EXT = ['exr', 'hdr'];
 export const extOf = (n) => (n.includes('.') ? n.split('.').pop().toLowerCase() : '');
 
@@ -23,6 +23,7 @@ export async function sniffExt(file) {
   if (starts('RIFF') && text.slice(8, 12) === 'WEBP') return 'webp';
   if (starts('BM') && head.length > 14 && !/^[\x20-\x7e\s]{40}/.test(text)) return 'bmp';
   if (starts('%PDF')) return 'pdf';
+  if (b(0x49, 0x49, 0x2a, 0x00) || b(0x4d, 0x4d, 0x00, 0x2a)) return 'tif';      // TIFF (little / big endian)
   if (b(0x76, 0x2f, 0x31, 0x01)) return 'exr';
   if (starts('#?RADIANCE') || starts('#?RGBE')) return 'hdr';
   if (/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/i.test(text)) return 'svg';
@@ -83,7 +84,32 @@ function layoutRow(group, sheets) {
   }
 }
 
+const isTiff = (file) => /\.tiff?$/i.test(file.name) || file.kext === 'tif' || file.kext === 'tiff';
+
+/** Decode a TIFF (browsers cannot) into a canvas, downscaled so the longest side is at most `maxSide`. */
+export async function decodeTiff(file, maxSide = 4096) {
+  const UTIF = (await import('three/examples/jsm/libs/utif.module.js')).default;
+  // The inflate bundled with this TIFF reader decodes ZIP/deflate TIFFs (Photoshop's "ZIP" option) wrongly, leaving most of the
+  // picture black. The standard inflate fixes every deflate variant (prediction filter, 16-bit, tiled, CMYK).
+  const { inflateSync } = await import('three/examples/jsm/libs/fflate.module.js');
+  UTIF._inflateRaw = (src) => inflateSync(src);
+  const buf = await file.arrayBuffer();
+  const ifds = UTIF.decode(buf);
+  if (!ifds.length) throw new Error('empty TIFF');
+  const ifd = ifds.reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a), ifds[0]);   // the biggest page
+  UTIF.decodeImage(buf, ifd, ifds);
+  const rgba = UTIF.toRGBA8(ifd), w = ifd.width, h = ifd.height;
+  const full = document.createElement('canvas'); full.width = w; full.height = h;
+  full.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), w, h), 0, 0);
+  const k = Math.min(1, maxSide / Math.max(w, h));
+  if (k === 1) return full;
+  const out = document.createElement('canvas'); out.width = Math.max(1, Math.round(w * k)); out.height = Math.max(1, Math.round(h * k));
+  const octx = out.getContext('2d'); octx.imageSmoothingQuality = 'high'; octx.drawImage(full, 0, 0, out.width, out.height);
+  return out;
+}
+
 async function canvasFromImageFile(file, maxSide = 4096) {
+  if (isTiff(file)) return decodeTiff(file, maxSide);
   const url = URL.createObjectURL(file);
   try {
     const img = new Image(); img.decoding = 'async';

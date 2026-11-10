@@ -1,17 +1,20 @@
 // "Pack to can": wrap front-of-pack / back-of-pack pictures onto a can, projecting each picture onto its side the way a
 // pack shot is photographed (front picture on the front half, back picture on the back half).
 import * as THREE from 'three';
+import { decodeTiff } from './anyfile.js';
 
 export const CAN_SIZES = {
   auto: { label: 'Match the picture' },
   std330: { label: 'Standard 330 ml', D: 0.066, H: 0.115 },
   sleek330: { label: 'Sleek 330 ml', D: 0.0585, H: 0.146 },
   ml200: { label: 'Slim 200 ml', D: 0.0523, H: 0.113 },
+  bottle500: { label: 'Bottle 500 ml (PET)', D: 0.065, H: 0.205, bottle: true },
 };
 
 const isBg = (d, i) => d[i + 3] < 24 || (d[i] > 242 && d[i + 1] > 242 && d[i + 2] > 242);
 
 async function loadCanvas(file, maxSide = 2048) {
+  if (/\.tiff?$/i.test(file.name) || file.kext === 'tif' || file.kext === 'tiff') return decodeTiff(file, maxSide);
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
@@ -103,6 +106,14 @@ function plainBack(front) {
   return out;
 }
 
+function bottleProfile(R, H) {          // generic PET bottle: petaloid-ish base, straight body, shoulder, neck, cap
+  const P = [[0, 0.004], [0.55 * R, 0.0015], [0.8 * R, 0], [0.92 * R, 0.004], [R, 0.014], [R, 0.58 * H], [0.985 * R, 0.62 * H],
+    [0.93 * R, 0.66 * H], [0.80 * R, 0.705 * H], [0.60 * R, 0.76 * H], [0.45 * R, 0.82 * H], [0.43 * R, 0.855 * H],
+    [0.43 * R, 0.895 * H], [0.52 * R, 0.9 * H], [0.52 * R, 0.91 * H], [0.46 * R, 0.917 * H], [0.5 * R, 0.925 * H],
+    [0.5 * R, 0.985 * H], [0.45 * R, H], [0, H]];
+  return P.map(([r, y]) => new THREE.Vector2(r, y));
+}
+
 function canProfile(R, H) {
   const P = [[0, 0.0035], [0.40 * R, 0.0015], [0.66 * R, 0], [0.80 * R, 0], [0.88 * R, 0.0025], [0.95 * R, 0.0065], [R, 0.0125],
     [R, H - 0.027], [0.985 * R, H - 0.021], [0.95 * R, H - 0.016], [0.905 * R, H - 0.0105], [0.89 * R, H - 0.0075],
@@ -146,17 +157,19 @@ export async function buildPackCan({ front, back, size = 'auto' }) {
   const bc = back ? cutOut(await loadCanvas(back)) : null;
   const ref = fc || bc;
   const preset = CAN_SIZES[size] && CAN_SIZES[size].D ? CAN_SIZES[size] : null;
-  let D = 0.066, H = 0.115;
-  if (preset) { D = preset.D; H = preset.H; }
-  else {                                                      // match the picture's proportions when it looks like a can
+  let D = 0.066, H = 0.115, bottle = false;
+  if (preset) { D = preset.D; H = preset.H; bottle = !!preset.bottle; }
+  else {                                                      // match the picture's proportions; tall pictures are bottles
     const ratio = ref.height / ref.width;
-    H = D * (ratio >= 1.2 && ratio <= 3.6 ? ratio : 1.74);
+    bottle = ratio > 2.75;
+    if (bottle) D = 0.065;
+    H = D * (ratio >= 1.2 && ratio <= 5 ? ratio : 1.74);
   }
   const R = D / 2;
-  const geo = new THREE.LatheGeometry(canProfile(R, H), 160);
+  const geo = new THREE.LatheGeometry((bottle ? bottleProfile : canProfile)(R, H), 160);
   const group = new THREE.Group();
   const base = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color: 0xc9ccd1, metalness: 1, roughness: 0.28, side: THREE.DoubleSide }));
-  base.name = 'can body (aluminium)'; group.add(base);
+  base.name = bottle ? 'bottle body' : 'can body (aluminium)'; group.add(base);
   const add = (isFront, canvas, name) => {
     const m = new THREE.Mesh(halfGeometry(geo, isFront, R, H), printedMaterial(canvas));
     m.name = name; m.renderOrder = 1; group.add(m);
@@ -175,4 +188,4 @@ export function assignPack(imgs) {
   if (!back) back = imgs.find((f) => f !== front && !isFront(f)) || null;
   return { front, back };
 }
-export const looksLikePack = (imgs) => imgs.some((f) => /front|back|fop|bop|pack|can\b|label/i.test(f.name));
+export const looksLikePack = (imgs) => imgs.some((f) => /front|back|fop|bop|pack|\bcan\b|label|gs1|\d\s?(ml|cl)\b|\d\s?l\b/i.test(f.name));
