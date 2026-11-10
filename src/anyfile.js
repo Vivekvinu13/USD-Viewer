@@ -108,7 +108,7 @@ export async function decodeTiff(file, maxSide = 4096) {
   return out;
 }
 
-async function canvasFromImageFile(file, maxSide = 4096) {
+export async function canvasFromImageFile(file, maxSide = 4096) {
   if (isTiff(file)) return decodeTiff(file, maxSide);
   const url = URL.createObjectURL(file);
   try {

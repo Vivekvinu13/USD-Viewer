@@ -139,3 +139,17 @@ Print artwork usually arrives as `.tif`. TIFF files (plain, LZW, PackBits, JPEG 
 with transparency; striped or tiled) are decoded in the browser. The TIFF reader bundled with Three.js decodes ZIP/deflate
 files wrongly (most of the picture comes out black), so the viewer swaps in the standard inflate routine. Tall pictures
 (height over 2.75x the width) are fitted to a generic 500 ml PET bottle instead of a can; the **Shape** menu overrides this.
+
+## Artwork sheet → container (roll the label)
+Drop a flat **artwork approval sheet** (the unrolled label with dimension lines, specs, colour swatches and approval boxes
+around it; PNG, JPG, TIFF, PDF page). The viewer finds the label (the largest block of thick colour once thin lines, text and
+small swatches are removed) and rolls it around a default container:
+
+- **Cans:** 330 ml standard, 330 ml sleek, 200 ml slim; printed all over the straight body.
+- **PET bottles:** 500 ml, 1 L, 1.5 L; the label wraps as a sleeve sized from its proportions.
+- **Glass contour bottle** with dark cola inside.
+
+**Auto** picks the container from the label's shape and any volume in the file name (`200ml`, `1.0L`, ...). **Mode** switches
+between *Artwork sheet* (roll the label), *Pack shot* (front/back pictures) and *Flat sheet*; the viewer decides by looking
+at the picture and you can override it. **Adjust label area…** opens an editor to drag the box over the label by hand;
+**Rotate**, **Height** and **Label size** place the sleeve. Cartons (e.g. Tetra Wedge) are not modelled yet.

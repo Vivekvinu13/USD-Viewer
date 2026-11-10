@@ -30,6 +30,13 @@
       </div>
     </div>
 
+    <div id="labelEditor" class="modal" hidden>
+      <div class="modalCard">
+        <div class="modalHead"><b>Label area</b><span class="muted small">Drag the box edges or corners so it covers just the printed label.</span></div>
+        <canvas id="leCanvas"></canvas>
+        <div class="modalBtns"><button id="leCancel" class="ghost">Cancel</button><button id="leOk" class="primary">Use this area</button></div>
+      </div>
+    </div>
     <img id="refOverlay" class="refOverlay" alt="" hidden />
     <div id="refCard" class="refCard" hidden>
       <div class="refHead"><b>Reference render</b><span id="refName" class="muted small"></span>
@@ -79,9 +86,19 @@
       </div>
       <label id="tintLabel" hidden>Glass/liquid tint <input type="range" id="optTint" min="0.2" max="3" step="0.05" value="1" /></label>
       <div id="packBox" hidden>
-        <h4>Pack on can / bottle</h4>
-        <label><input type="checkbox" id="optCan" /> Wrap on a can / bottle</label>
-        <label id="canSizeLabel" hidden>Shape <select id="optCanSize"></select></label>
+        <h4>Pack on container</h4>
+        <label>Mode <select id="optPackMode">
+          <option value="art">Artwork sheet · roll the label</option>
+          <option value="shot">Pack shot · front &amp; back</option>
+          <option value="sheet">Flat sheet</option></select></label>
+        <label id="containerLabel" hidden>Container <select id="optContainer"></select></label>
+        <label id="artFileLabel" hidden>Artwork <select id="optArtFile"></select></label>
+        <div id="artBox" hidden>
+          <button id="leBtn" class="ghost">Adjust label area…</button>
+          <label>Rotate <input type="range" id="optRot" min="-180" max="180" step="1" value="0" /></label>
+          <label id="posLabel">Height <input type="range" id="optPos" min="15" max="75" step="1" value="40" /></label>
+          <label id="hLabel">Label size <input type="range" id="optLabelH" min="50" max="140" step="1" value="100" /></label>
+        </div>
         <label id="frontLabel" hidden>Front of pack <select id="optFront"></select></label>
         <label id="backLabel" hidden>Back of pack <select id="optBack"></select></label>
       </div>

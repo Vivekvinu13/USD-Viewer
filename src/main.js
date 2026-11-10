@@ -19,8 +19,11 @@ import { AMFLoader } from 'three/examples/jsm/loaders/AMFLoader.js';
 import { KMZLoader } from 'three/examples/jsm/loaders/KMZLoader.js';
 import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 import { XYZLoader } from 'three/examples/jsm/loaders/XYZLoader.js';
-import { MODEL_EXT, extOf, classify, sniffExt, buildImageSheets, buildPdfSheets } from './anyfile.js';
-import { buildPackCan, assignPack, looksLikePack, CAN_SIZES } from './pack.js';
+import { MODEL_EXT, extOf, classify, sniffExt, buildImageSheets, buildPdfSheets, canvasFromImageFile } from './anyfile.js';
+import { buildPackCan, assignPack } from './pack.js';
+import { CONTAINERS, autoContainer } from './containers.js';
+import { buildWrapped } from './wrap.js';
+import { detectLabel, looksLikePackShot, cropCanvas, editLabelRect } from './label.js';
 import { zipSync, unzipSync } from 'three/examples/jsm/libs/fflate.module.js';
 
 const $ = (id) => document.getElementById(id);
@@ -277,8 +280,10 @@ async function openFiles(fileList) {
   if (imgs.length) {
     const pics = imgs.filter((f) => f.kind === 'image'), pk = assignPack(pics);
     // pictures named front/back (or FOP/BOP) open straight onto a can; any other picture can be wrapped with the checkbox
+    // mode is decided after looking at the picture: artwork sheet (roll the label), pack shot (front/back), or plain sheet
     session = { files, model: imgs[0], images: imgs, variants: {}, mode: 'images',
-      pack: { on: looksLikePack(pics), size: 'auto', front: pk.front, back: pk.back, pics } };
+      pack: { mode: null, container: 'auto', front: pk.front, back: pk.back, pics, art: pics[0] || null,
+        rect: null, rot: 0, pos: null, hscale: 1, analysis: null, resolved: null } };
     return loadSession(false);
   }
   setLoading(false);
@@ -313,20 +318,45 @@ $('refOver').onchange = (e) => { $('refOverlay').hidden = !e.target.checked; };
 $('refOpacity').oninput = (e) => { $('refOverlay').style.opacity = e.target.value; };
 $('refImg').onclick = () => window.open($('refImg').src, '_blank');
 
-// ---------- pack on can: front-of-pack / back-of-pack pictures wrapped onto a can
+// ---------- pack on container: artwork sheet -> label rolled on a can / bottle, or front/back pack shots
+async function ensureAnalysis(pk) {
+  if (pk.analysis && pk.analysis.file === pk.art) return pk.analysis;
+  const canvas = await canvasFromImageFile(pk.art, 5000);
+  pk.analysis = { file: pk.art, canvas, det: detectLabel(canvas) };
+  return pk.analysis;
+}
+function decideMode(pk, an) {
+  if (pk.pics.some((f) => /front|back|fop|bop|rear/i.test(f.name))) return 'shot';        // named like a pack shot
+  if (looksLikePackShot(an.det)) return 'shot';
+  if (an.det.conf >= 0.3 && an.det.areaRatio >= 0.01) return 'art';                          // a label found on a sheet
+  return 'sheet';
+}
 function setupPackUI() {
   const pk = session?.mode === 'images' ? session.pack : null;
   $('packBox').hidden = !pk?.pics.length;
   if (!pk?.pics.length) return;
-  $('optCan').checked = pk.on;
-  const names = '<option value="-1">(none)</option>' + pk.pics.map((f, i) => `<option value="${i}">${f.name}</option>`).join('');
-  $('optFront').innerHTML = names; $('optBack').innerHTML = names;
+  $('optPackMode').value = pk.mode || 'sheet';
+  const art = pk.mode === 'art', shot = pk.mode === 'shot';
+  $('containerLabel').hidden = !(art || shot);
+  const autoText = art && pk.resolved ? `Auto · ${CONTAINERS[pk.resolved].label}` : 'Auto · match the picture';
+  $('optContainer').innerHTML = `<option value="auto">${autoText}</option>` + Object.entries(CONTAINERS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+  $('optContainer').value = pk.container;
+  $('artBox').hidden = !art;
+  $('artFileLabel').hidden = !(art && pk.pics.length > 1);
+  const names = pk.pics.map((f, i) => `<option value="${i}">${f.name}</option>`).join('');
+  $('optArtFile').innerHTML = names; $('optArtFile').value = String(pk.pics.indexOf(pk.art));
+  const c = pk.resolved ? CONTAINERS[pk.resolved] : null;
+  for (const id of ['posLabel', 'hLabel']) $(id).hidden = !c || c.kind === 'can';
+  $('optRot').value = String(pk.rot); $('optLabelH').value = String(Math.round(pk.hscale * 100));
+  $('optPos').value = String(Math.round((pk.pos ?? c?.center ?? 0.4) * 100));
+  const opts = '<option value="-1">(none)</option>' + pk.pics.map((f, i) => `<option value="${i}">${f.name}</option>`).join('');
+  $('optFront').innerHTML = opts; $('optBack').innerHTML = opts;
   $('optFront').value = String(pk.pics.indexOf(pk.front)); $('optBack').value = String(pk.pics.indexOf(pk.back));
-  $('optCanSize').innerHTML = Object.entries(CAN_SIZES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
-  $('optCanSize').value = pk.size;
-  for (const id of ['canSizeLabel', 'frontLabel', 'backLabel']) $(id).hidden = !pk.on;
+  for (const id of ['frontLabel', 'backLabel']) $(id).hidden = !shot;
 }
-function changePack(fn) { const pk = session?.pack; if (!pk) return; fn(pk); loadSession(false); }
+function changePack(fn, keepView = false) { const pk = session?.pack; if (!pk) return; fn(pk); loadSession(keepView); }
+let packTimer = null;
+const laterPack = (fn) => { clearTimeout(packTimer); packTimer = setTimeout(() => changePack(fn, true), 140); };
 
 let loadAbort = null;
 let session = null;
@@ -347,13 +377,22 @@ async function loadSession(keepView) {
     resources.set(f.name.toLowerCase(), u);
   }
   try {
-    let root, notes = [], meshInfo = [], srvInfo = null;
+    let root, notes = [], meshInfo = [], srvInfo = null, labelHint = null;
     if (session.mode === 'pdf') root = await buildPdfSheets(model);
     else if (session.mode === 'images') {
       const pk = session.pack;
-      root = pk?.on && (pk.front || pk.back)
-        ? await buildPackCan({ front: pk.front, back: pk.back, size: pk.size })
-        : await buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext })));
+      const sheets = () => buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext })));
+      if (pk?.pics.length) {
+        const an = await ensureAnalysis(pk);
+        if (!pk.mode) pk.mode = decideMode(pk, an);
+        if (pk.mode === 'art') {
+          const label = cropCanvas(an.canvas, pk.rect || an.det.rect);
+          pk.resolved = pk.container === 'auto' ? autoContainer(label.width / label.height, pk.art.name) : pk.container;
+          root = buildWrapped({ label, id: pk.resolved, rot: pk.rot, pos: pk.pos, hscale: pk.hscale, tint: an.det.dominant });
+          if (an.det.conf < 0.3 && !pk.rect) labelHint = 'I could not find the label automatically. Use "Adjust label area…" to drag a box over it.';
+        } else if (pk.mode === 'shot') root = await buildPackCan({ front: pk.front, back: pk.back, size: pk.container });
+        else root = await sheets();
+      } else root = await sheets();
     }
     else if (isUsdLayer(model) || (model.kext || extOf(model.name)) === 'usdz') {
       if (await serverAvailable()) {
@@ -388,6 +427,7 @@ async function loadSession(keepView) {
     $('panel').hidden = false;
     if (!keepView) setupReference(session.mode === '3d' ? files : []);
     setupPackUI();
+    if (labelHint) showError(labelHint);
   } catch (e) {
     if (e?.name === 'AbortError') return;                    // superseded by a newer load
     console.error(e);
@@ -656,10 +696,19 @@ $('optLight').oninput = applyLight;
 $('optExposure').oninput = applyLight;
 $('optEnv').onchange = () => { applyEnv(); applyLight(); };
 $('optTint').oninput = applyTint;
-$('optCan').onchange = (e) => changePack((pk) => { pk.on = e.target.checked; });
-$('optCanSize').onchange = (e) => changePack((pk) => { pk.size = e.target.value; });
+$('optPackMode').onchange = (e) => changePack((pk) => { pk.mode = e.target.value; });
+$('optContainer').onchange = (e) => changePack((pk) => { pk.container = e.target.value; pk.pos = null; });
+$('optArtFile').onchange = (e) => changePack((pk) => { pk.art = pk.pics[+e.target.value]; pk.rect = null; pk.analysis = null; pk.mode = null; });
 $('optFront').onchange = (e) => changePack((pk) => { pk.front = pk.pics[+e.target.value] || null; });
 $('optBack').onchange = (e) => changePack((pk) => { pk.back = pk.pics[+e.target.value] || null; });
+$('optRot').oninput = (e) => { const v = +e.target.value; laterPack((pk) => { pk.rot = v; }); };
+$('optPos').oninput = (e) => { const v = +e.target.value / 100; laterPack((pk) => { pk.pos = v; }); };
+$('optLabelH').oninput = (e) => { const v = +e.target.value / 100; laterPack((pk) => { pk.hscale = v; }); };
+$('leBtn').onclick = async () => {
+  const pk = session?.pack; if (!pk?.analysis) return;
+  const r = await editLabelRect(pk.analysis.canvas, pk.rect || pk.analysis.det.rect);
+  if (r) changePack((p) => { p.rect = r; p.pos = null; }, true);
+};
 $('optEnvRot').oninput = applyEnv;
 function changeVariant(set, value) {
   if (!session) return;
@@ -708,4 +757,4 @@ async function collectDropped(dt) {
 }
 
 // expose for testing
-window.__viewer = { openFiles, scene, camera };
+window.__viewer = { openFiles, scene, camera, detectLabel, canvasFromImageFile };   // handles for automated tests

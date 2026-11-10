@@ -42,3 +42,10 @@ aside input[type=range] { width: 110px; }
 .refRow { display: flex; align-items: center; gap: 6px; font-size: 12px; justify-content: space-between; } .refRow input[type=range] { width: 90px; }
 .refCard select { background: #14161a; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px; }
 .refOverlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; z-index: 3; opacity: .5; }
+
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.68); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
+.modalCard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; max-width: 96vw; }
+.modalHead { display: flex; flex-direction: column; gap: 2px; }
+.modalCard canvas { position: static; inset: auto; width: auto; height: auto; max-width: 100%; display: block; touch-action: none; background: #fff; border-radius: 6px; }
+.modalBtns { display: flex; justify-content: flex-end; gap: 8px; }
+#artBox button { width: 100%; margin: 6px 0 2px; }

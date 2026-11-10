@@ -2,14 +2,7 @@
 // pack shot is photographed (front picture on the front half, back picture on the back half).
 import * as THREE from 'three';
 import { decodeTiff } from './anyfile.js';
-
-export const CAN_SIZES = {
-  auto: { label: 'Match the picture' },
-  std330: { label: 'Standard 330 ml', D: 0.066, H: 0.115 },
-  sleek330: { label: 'Sleek 330 ml', D: 0.0585, H: 0.146 },
-  ml200: { label: 'Slim 200 ml', D: 0.0523, H: 0.113 },
-  bottle500: { label: 'Bottle 500 ml (PET)', D: 0.065, H: 0.205, bottle: true },
-};
+import { CONTAINERS, containerProfile } from './containers.js';
 
 const isBg = (d, i) => d[i + 3] < 24 || (d[i] > 242 && d[i + 1] > 242 && d[i + 2] > 242);
 
@@ -106,21 +99,6 @@ function plainBack(front) {
   return out;
 }
 
-function bottleProfile(R, H) {          // generic PET bottle: petaloid-ish base, straight body, shoulder, neck, cap
-  const P = [[0, 0.004], [0.55 * R, 0.0015], [0.8 * R, 0], [0.92 * R, 0.004], [R, 0.014], [R, 0.58 * H], [0.985 * R, 0.62 * H],
-    [0.93 * R, 0.66 * H], [0.80 * R, 0.705 * H], [0.60 * R, 0.76 * H], [0.45 * R, 0.82 * H], [0.43 * R, 0.855 * H],
-    [0.43 * R, 0.895 * H], [0.52 * R, 0.9 * H], [0.52 * R, 0.91 * H], [0.46 * R, 0.917 * H], [0.5 * R, 0.925 * H],
-    [0.5 * R, 0.985 * H], [0.45 * R, H], [0, H]];
-  return P.map(([r, y]) => new THREE.Vector2(r, y));
-}
-
-function canProfile(R, H) {
-  const P = [[0, 0.0035], [0.40 * R, 0.0015], [0.66 * R, 0], [0.80 * R, 0], [0.88 * R, 0.0025], [0.95 * R, 0.0065], [R, 0.0125],
-    [R, H - 0.027], [0.985 * R, H - 0.021], [0.95 * R, H - 0.016], [0.905 * R, H - 0.0105], [0.89 * R, H - 0.0075],
-    [0.915 * R, H - 0.0045], [0.9 * R, H - 0.0005], [0.86 * R, H], [0.80 * R, H - 0.0025], [0.74 * R, H - 0.0045], [0, H - 0.0045]];
-  return P.map(([r, y]) => new THREE.Vector2(r, y));
-}
-
 /** One half (front = +Z side, back = -Z side) of the can with picture-projection UVs. */
 function halfGeometry(geo, front, R, H) {
   const pos = geo.attributes.position, nor = geo.attributes.normal, idx = geo.index;
@@ -150,23 +128,21 @@ function printedMaterial(canvas) {
   });
 }
 
-/** front/back: image Files (either may be missing). size: key of CAN_SIZES. */
+/** front/back: image Files (either may be missing). size: 'auto' or a key of CONTAINERS. */
 export async function buildPackCan({ front, back, size = 'auto' }) {
   if (!front && !back) throw new Error('no picture to put on the can');
   const fc = front ? cutOut(await loadCanvas(front)) : null;
   const bc = back ? cutOut(await loadCanvas(back)) : null;
   const ref = fc || bc;
-  const preset = CAN_SIZES[size] && CAN_SIZES[size].D ? CAN_SIZES[size] : null;
-  let D = 0.066, H = 0.115, bottle = false;
-  if (preset) { D = preset.D; H = preset.H; bottle = !!preset.bottle; }
+  let id = 'can330', D = 0.066, H = 0.115;
+  if (CONTAINERS[size]) { id = size; D = CONTAINERS[size].D; H = CONTAINERS[size].H; }
   else {                                                      // match the picture's proportions; tall pictures are bottles
     const ratio = ref.height / ref.width;
-    bottle = ratio > 2.75;
-    if (bottle) D = 0.065;
+    if (ratio > 2.75) { id = 'pet500'; D = 0.065; }
     H = D * (ratio >= 1.2 && ratio <= 5 ? ratio : 1.74);
   }
-  const R = D / 2;
-  const geo = new THREE.LatheGeometry((bottle ? bottleProfile : canProfile)(R, H), 160);
+  const R = D / 2, bottle = CONTAINERS[id].kind !== 'can';
+  const geo = new THREE.LatheGeometry(containerProfile(id, R, H), 160);
   const group = new THREE.Group();
   const base = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color: 0xc9ccd1, metalness: 1, roughness: 0.28, side: THREE.DoubleSide }));
   base.name = bottle ? 'bottle body' : 'can body (aluminium)'; group.add(base);
