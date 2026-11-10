@@ -368,8 +368,6 @@ async function loadSession(keepView) {
 }
 
 // configuration menus, Grip lighting and droplet glass, driven by what the server reports
-const CONFIG_LABELS = { Dry: 'Dry', Wet: 'Wet (droplets)', Open_Dry: 'Open cap · dry', Open_Wet: 'Open cap · wet (droplets)' };
-const CONFIG_ORDER = ['Dry', 'Wet', 'Open_Dry', 'Open_Wet'];
 // Grip/Omniverse render with a square frame sized by the horizontal aperture: fit that square inside our viewport
 function gripFov(fovHDeg) {
   const a = camera.aspect || 1;
@@ -392,15 +390,8 @@ async function setupFromServer(info, keepView) {
   gripLook = info.look || null;
   gripEnvScale = gripLook?.env?.scale > 0 ? gripLook.env.scale : 1;
   if (gripLook?.camera && !keepView) applyGripCamera();
-  const vis = (info.variants || []).find((v) => v.set === 'Visibility');
   const art = (info.variants || []).find((v) => v.set === 'Artwork');
-  $('variantBox').hidden = !(vis || art);
-  if (vis) {
-    const opts = [...vis.options].sort((x, y) => (CONFIG_ORDER.indexOf(x) + 99) % 99 - (CONFIG_ORDER.indexOf(y) + 99) % 99);
-    $('optConfig').innerHTML = opts.map((o) => `<option value="${o}">${CONFIG_LABELS[o] || o}</option>`).join('');
-    $('optConfig').value = vis.selected;
-  }
-  $('optConfig').parentElement.hidden = !vis;
+  $('variantBox').hidden = !art;
   $('artVarLabel').hidden = !art;
   if (art) {
     $('optArtVar').innerHTML = art.options.map((o) => `<option value="${o}">${o[0].toUpperCase() + o.slice(1)}</option>`).join('');
@@ -508,12 +499,9 @@ function prepare(root, file) {
   }
   const s = new THREE.Box3().setFromObject(pivot).getSize(new THREE.Vector3());
   const rows = [
-    ['File', file.name], ['Size', (file.size / 1048576).toFixed(2) + ' MB'],
-    ['Meshes', meshes.toLocaleString()], ['Triangles', Math.round(tris).toLocaleString()],
-    ['Materials', mats.size], ['Dimensions', [s.x, s.y, s.z].map((v) => +v.toPrecision(3)).join(' × ')],
+    ['File', file.name], ['Triangles', Math.round(tris).toLocaleString()],
+    ['Dimensions', [s.x, s.y, s.z].map((v) => +v.toPrecision(3)).join(' × ')],
   ];
-  const notes = root.userData.notes || [];
-  if (notes.length) rows.push(['Notes', notes.join(' · ')]);
   $('info').innerHTML = rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('');
 }
 
@@ -646,7 +634,6 @@ function changeVariant(set, value) {
   session.variants = { ...session.variants, [set]: value };
   loadSession(true);                      // re-convert with the new selection, keep the camera
 }
-$('optConfig').onchange = (e) => changeVariant('Visibility', e.target.value);
 $('optArtVar').onchange = (e) => changeVariant('Artwork', e.target.value);
 $('optArtwork').onchange = () => { if (current) buildLayers(current); };
 $('optShadow').onchange = (e) => { sun.castShadow = e.target.checked; floor.visible = !!current && e.target.checked; };

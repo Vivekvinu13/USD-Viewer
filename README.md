@@ -59,8 +59,7 @@ The converter decodes them the same way Grip's `artwork_texture` shader does, us
 `roughness_black`, `base_color_black/white` and `use_refractive_artwork` settings.
 
 ## Configurations, artwork and lighting (USD projects with Grip-style variants)
-- **State**: Dry / Wet / Open cap · dry / Open cap · wet. These switch the file's own `Visibility` variant on the
-  server, so the right cap and droplet meshes appear. Droplets are exported as transmissive glass.
+- **State**: the viewer always opens the project in its **Dry** state (the Wet and Open-cap variants were removed).
 - **Artwork file**: Clean / Optimized / Original (the file's `Artwork` variant).
 - **Show artwork**: untick to see the bare aluminium can.
 - **Lighting**: Bright studio, Dark studio, Soft room, and *Grip studio (from file)* when the project has a
@@ -122,3 +121,7 @@ showing the can through them, instead of milky or mercury-like.
 Droplets whose shape comes from an opacity mask are cut out cleanly (alpha mask) instead of being faded like a film, which
 gave frosted white blobs; they are refractive (IOR ~1.33) with a physically sized thickness, no roughness and only small
 reflected glints, so they read as clear water beads that magnify the can colour beneath.
+
+## Side panel
+The Model section shows only the file name, triangle count and dimensions. The state is always *Dry*; the **Artwork file**
+menu (Clean / Optimized / Original) remains for projects that offer it.

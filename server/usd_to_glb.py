@@ -19,7 +19,7 @@ import uuid
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, UsdUtils
 
-VERSION = "15-water-droplets"
+VERSION = "16-dry-only"
 USD_EXT = {".usd", ".usda", ".usdc", ".usdz"}
 IMG_OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 DATA_QUARTER_MAX = 1024  # gloss/metal and normal-map quarters stay smooth: at full size their fine grain shows as streaks
@@ -771,6 +771,10 @@ def convert(root: Path, variants: dict | None = None) -> tuple[bytes, dict]:
     art = next((v for v in available_variants if v["set"] == "Artwork"), None)
     if art and "Artwork" not in variants and "original" in art["options"]:
         variants["Artwork"] = "original"
+    # The viewer shows the Dry state only (no Wet / Open-cap variants)
+    vis = next((v for v in available_variants if v["set"] == "Visibility"), None)
+    if vis and "Dry" in vis["options"]:
+        variants["Visibility"] = "Dry"
     apply_variants(stage, variants)
     for v in available_variants:                       # report what is selected now
         v["selected"] = (variants or {}).get(v["set"], v["selected"])
