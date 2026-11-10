@@ -19,8 +19,8 @@ import { AMFLoader } from 'three/examples/jsm/loaders/AMFLoader.js';
 import { KMZLoader } from 'three/examples/jsm/loaders/KMZLoader.js';
 import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 import { XYZLoader } from 'three/examples/jsm/loaders/XYZLoader.js';
-import { MODEL_EXT, extOf, classify, sniffExt, buildImageSheets, buildPdfSheets, canvasFromImageFile } from './anyfile.js';
-import { buildPackCan, assignPack } from './pack.js';
+import { MODEL_EXT, extOf, classify, sniffExt, buildImageSheets, buildPdfSheets, canvasFromImageFile, renderPdfPage } from './anyfile.js';
+import { buildPackCan, assignPack, PACK_FRONT, PACK_BACK } from './pack.js';
 import { CONTAINERS, autoContainer } from './containers.js';
 import { buildWrapped } from './wrap.js';
 import { detectLabel, looksLikePackShot, cropCanvas, editLabelRect } from './label.js';
@@ -275,7 +275,12 @@ async function openFiles(fileList) {
   const model = usdz ?? (usd.length ? await pickUsdRoot(usd) : files.find((f) => f.kind === '3d'));
   if (model) { session = { files, model, variants: {}, mode: '3d' }; return loadSession(false); }
   const pdf = files.find((f) => f.kind === 'pdf');
-  if (pdf) { session = { files, model: pdf, variants: {}, mode: 'pdf' }; return loadSession(false); }
+  if (pdf) {                                                       // a PDF artwork sheet: find the label on page 1 and roll it
+    session = { files, model: pdf, images: [pdf], variants: {}, mode: 'images',
+      pack: { mode: null, container: 'auto', front: null, back: null, pics: [pdf], art: pdf, page: 1, numPages: 1,
+        rect: null, rot: 0, pos: null, hscale: 1, analysis: null, resolved: null } };
+    return loadSession(false);
+  }
   const imgs = files.filter((f) => f.kind === 'image' || f.kind === 'hdr');
   if (imgs.length) {
     const pics = imgs.filter((f) => f.kind === 'image'), pk = assignPack(pics);
@@ -320,13 +325,15 @@ $('refImg').onclick = () => window.open($('refImg').src, '_blank');
 
 // ---------- pack on container: artwork sheet -> label rolled on a can / bottle, or front/back pack shots
 async function ensureAnalysis(pk) {
-  if (pk.analysis && pk.analysis.file === pk.art) return pk.analysis;
-  const canvas = await canvasFromImageFile(pk.art, 5000);
-  pk.analysis = { file: pk.art, canvas, det: detectLabel(canvas) };
+  if (pk.analysis && pk.analysis.file === pk.art && pk.analysis.page === (pk.page || 1)) return pk.analysis;
+  let canvas;
+  if (pk.art.kind === 'pdf') { const r = await renderPdfPage(pk.art, pk.page || 1, 4500); canvas = r.canvas; pk.numPages = r.numPages; }
+  else canvas = await canvasFromImageFile(pk.art, 5000);
+  pk.analysis = { file: pk.art, page: pk.page || 1, canvas, det: detectLabel(canvas) };
   return pk.analysis;
 }
 function decideMode(pk, an) {
-  if (pk.pics.some((f) => /front|back|fop|bop|rear/i.test(f.name))) return 'shot';        // named like a pack shot
+  if (pk.pics.some((f) => PACK_FRONT.test(f.name) || PACK_BACK.test(f.name))) return 'shot';        // named like a pack shot
   if (looksLikePackShot(an.det)) return 'shot';
   if (an.det.conf >= 0.3 && an.det.areaRatio >= 0.01) return 'art';                          // a label found on a sheet
   return 'sheet';
@@ -343,6 +350,8 @@ function setupPackUI() {
   $('optContainer').value = pk.container;
   $('artBox').hidden = !art;
   $('artFileLabel').hidden = !(art && pk.pics.length > 1);
+  $('pageLabel').hidden = !(art && pk.numPages > 1);
+  if (pk.numPages > 1) { $('optPage').innerHTML = Array.from({ length: pk.numPages }, (_, i) => `<option value="${i + 1}">Page ${i + 1}</option>`).join(''); $('optPage').value = String(pk.page || 1); }
   const names = pk.pics.map((f, i) => `<option value="${i}">${f.name}</option>`).join('');
   $('optArtFile').innerHTML = names; $('optArtFile').value = String(pk.pics.indexOf(pk.art));
   const c = pk.resolved ? CONTAINERS[pk.resolved] : null;
@@ -381,7 +390,7 @@ async function loadSession(keepView) {
     if (session.mode === 'pdf') root = await buildPdfSheets(model);
     else if (session.mode === 'images') {
       const pk = session.pack;
-      const sheets = () => buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext })));
+      const sheets = () => (pk?.art?.kind === 'pdf' ? buildPdfSheets(pk.art) : buildImageSheets(session.images.map((f) => ({ file: f, kind: f.kind, ext: f.kext }))));
       if (pk?.pics.length) {
         const an = await ensureAnalysis(pk);
         if (!pk.mode) pk.mode = decideMode(pk, an);
@@ -699,6 +708,7 @@ $('optTint').oninput = applyTint;
 $('optPackMode').onchange = (e) => changePack((pk) => { pk.mode = e.target.value; });
 $('optContainer').onchange = (e) => changePack((pk) => { pk.container = e.target.value; pk.pos = null; });
 $('optArtFile').onchange = (e) => changePack((pk) => { pk.art = pk.pics[+e.target.value]; pk.rect = null; pk.analysis = null; pk.mode = null; });
+$('optPage').onchange = (e) => changePack((pk) => { pk.page = +e.target.value; pk.rect = null; pk.analysis = null; pk.mode = null; });
 $('optFront').onchange = (e) => changePack((pk) => { pk.front = pk.pics[+e.target.value] || null; });
 $('optBack').onchange = (e) => changePack((pk) => { pk.back = pk.pics[+e.target.value] || null; });
 $('optRot').oninput = (e) => { const v = +e.target.value; laterPack((pk) => { pk.rot = v; }); };

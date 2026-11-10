@@ -10,6 +10,7 @@ export const CONTAINERS = {
   pet500:   { label: 'PET bottle 500 ml',            kind: 'pet',   D: 0.065,  H: 0.205, center: 0.40 },
   pet1l:    { label: 'PET bottle 1 L',               kind: 'pet',   D: 0.085,  H: 0.300, center: 0.40 },
   pet15l:   { label: 'PET bottle 1.5 L',             kind: 'pet',   D: 0.092,  H: 0.330, center: 0.40 },
+  pet25l:   { label: 'PET bottle 2.5 L',             kind: 'pet',   D: 0.108,  H: 0.345, center: 0.40 },
   glass330: { label: 'Glass contour bottle 330 ml',  kind: 'glass', D: 0.063,  H: 0.205, center: 0.42 },
 };
 
@@ -63,8 +64,8 @@ export function autoContainer(labelAspect, name = '') {
   let ml = null;
   if (m) { const v = parseFloat(m[1].replace(',', '.')); ml = /^ml$/i.test(m[2]) ? v : /^cl$/i.test(m[2]) ? v * 10 : v * 1000; }
   const wide = labelAspect >= 3.0;                 // a wide, short label is a bottle sleeve; a squarer one is a printed can body
-  if (/glass|contour/i.test(name)) return 'glass330';
-  if (wide) return ml && ml >= 1300 ? 'pet15l' : ml && ml >= 800 ? 'pet1l' : ml && ml > 350 ? 'pet500' : labelAspect > 4.2 ? 'pet1l' : 'pet500';
+  if (/glass|vidro/i.test(name) || (/contour/i.test(name) && !/pet|bopp|rotulo|label/i.test(name))) return 'glass330';   // "NRPET Contour" is a PET label, not glass
+  if (wide) return ml && ml >= 2000 ? 'pet25l' : ml && ml >= 1300 ? 'pet15l' : ml && ml >= 800 ? 'pet1l' : ml && ml > 350 ? 'pet500' : labelAspect > 4.2 ? 'pet1l' : 'pet500';
   if (ml && ml <= 230) return 'can200';
   return labelAspect < 1.9 ? 'can330s' : 'can330';
 }

@@ -28,7 +28,7 @@ export function detectLabel(canvas) {
   const inv = new Uint8Array(w * h); for (let p = 0; p < w * h; p++) inv[p] = mask[p] ? 0 : 1;
   const eroded = box(inv, 2); for (let p = 0; p < w * h; p++) eroded[p] = eroded[p] ? 0 : 1;
   const opened = box(eroded, 2); for (let p = 0; p < w * h; p++) mask[p] = opened[p] && 1;
-  const dil = box(mask, Math.max(3, Math.round(0.012 * Math.max(w, h))));  // joins the label's parts across text and logos
+  const dil = box(mask, Math.max(3, Math.round(0.006 * Math.max(w, h))));  // joins the label's parts across text and logos
   // connected components of the dilated mask; pick the one with the most coloured pixels
   const lab = new Int32Array(w * h), count = [0]; let n = 0;
   const stack = new Int32Array(w * h);

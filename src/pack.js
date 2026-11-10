@@ -156,9 +156,12 @@ export async function buildPackCan({ front, back, size = 'auto' }) {
   return group;
 }
 
+// whole words only: `back_of_pack` counts, but BOPP (a label film) is not "bop" and "feedback" is not "back"
+export const PACK_FRONT = /(?<![a-z])(front|fop)(?![a-z])/i, PACK_BACK = /(?<![a-z])(back|bop|rear)(?![a-z])/i;
+
 /** Which dropped pictures are the front and the back of pack. */
 export function assignPack(imgs) {
-  const isBack = (f) => /back|bop|rear/i.test(f.name), isFront = (f) => /front|fop/i.test(f.name);
+  const isBack = (f) => PACK_BACK.test(f.name), isFront = (f) => PACK_FRONT.test(f.name);
   let back = imgs.find(isBack), front = imgs.find(isFront);
   if (!front) front = imgs.find((f) => f !== back) || null;
   if (!back) back = imgs.find((f) => f !== front && !isFront(f)) || null;

@@ -146,6 +146,21 @@ export async function buildImageSheets(entries) {            // entries: [{file,
   return group;
 }
 
+/** Render one PDF page to a canvas whose longest side is at most `maxSide` (for artwork sheets that need fine detail). */
+export async function renderPdfPage(file, pageNum = 1, maxSide = 4500) {
+  const pdfjs = await import('pdfjs-dist');
+  pdfjs.GlobalWorkerOptions.workerSrc = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const page = await doc.getPage(Math.min(Math.max(1, pageNum), doc.numPages));
+  const base = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: Math.min(8, maxSide / Math.max(base.width, base.height)) });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, canvas, viewport }).promise;
+  return { canvas, numPages: doc.numPages };
+}
+
 export async function buildPdfSheets(file, maxPages = 30) {
   const pdfjs = await import('pdfjs-dist');
   pdfjs.GlobalWorkerOptions.workerSrc = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
